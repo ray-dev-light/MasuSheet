@@ -378,7 +378,11 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
         }
     }
 
-    if (!isMouse && !isDraggingFillHandle && !isPointOnSelectionCornerHandle(event.x, event.y)) {
+    if (!isMouse &&
+        !isDraggingFillHandle &&
+        !isPointOnSelectionCornerHandle(event.x, event.y) &&
+        !isPointOnTopLeftSelectionRangeHandle(event.x, event.y)
+    ) {
         longPressGestureDetector.onTouchEvent(event)
     }
 
@@ -405,6 +409,8 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
             isDraggingFormulaPointRange = false
             isDraggingFormulaPointCol = false
             isDraggingFormulaPointRow = false
+            pendingTouchTapSelect = false
+            pendingDoubleTapOpenEditor = false
             draggingObjectId = null
             activeObjectResizePart = null
             isRotatingObject = false
@@ -657,8 +663,22 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                     }
                 }
 
-                // 5a-move (A7). Check if user is dragging the selection border to move selected cells (`Drag::Move`, `interact.rs:457-459`)
-                if (selectedObjectId == null && isPointOnSelectionBorder(event.x, event.y)) {
+                // 5a-tl-range. Check if user grabbed the circular top-left selection range handle (`●`) on a multi-cell selection
+                if (selectedObjectId == null && isPointOnTopLeftSelectionRangeHandle(event.x, event.y)) {
+                    if (container.isEditingInCell) {
+                        container.commitAndCloseInCellEditor(0, 0)
+                    }
+                    val snap = currentViewport
+                    dragAnchorRow = max(snap.selStartRow, snap.selEndRow)
+                    dragAnchorCol = max(snap.selStartCol, snap.selEndCol)
+                    isDraggingRangeSelection = event.pointerCount == 1
+                    invalidate()
+                    return true
+                }
+
+                // 5a-move (A7). Mouse-only: dragging the selection border moves selected cells (`Drag::Move`, `interact.rs:457-459`).
+                // Disabled for finger/stylus touch so pressing inside a selected cell expands the selection range cleanly without cutting/moving data.
+                if (isMouse && selectedObjectId == null && isPointOnSelectionBorder(event.x, event.y)) {
                     if (container.isEditingInCell) {
                         container.commitAndCloseInCellEditor(0, 0)
                     }
@@ -799,23 +819,31 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                     }
                 }
 
-                val now = System.currentTimeMillis()
-                val isDoubleClick = (anchorR == lastClickRow && anchorC == lastClickCol && (now - lastClickTimeMs) <= 400L)
+                val isFingerTouch = event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER && !isMouse
+                val eventNowMs = event.eventTime.takeIf { it > 0L } ?: System.currentTimeMillis()
+                val isDoubleClick = (anchorR == lastClickRow && anchorC == lastClickCol && (eventNowMs - lastClickTimeMs) in 0L..400L)
                 lastClickRow = anchorR
                 lastClickCol = anchorC
-                lastClickTimeMs = now
+                lastClickTimeMs = eventNowMs
 
                 if (isDoubleClick) {
-                    // Double-click -> Open native Android EditText over the cell with smart caret placement!
-                    viewModel.onSelectCell(anchorR, anchorC)
-                    container.bindState(viewModel.uiState.value)
-                    container.openInCellEditor(anchorR, anchorC, event.x, event.y)
-                    return true
+                    if (!isFingerTouch) {
+                        // Mouse / Stylus double-click -> Open native Android EditText over the cell with smart caret placement!
+                        viewModel.onSelectCell(anchorR, anchorC)
+                        container.bindState(viewModel.uiState.value)
+                        container.openInCellEditor(anchorR, anchorC, event.x, event.y)
+                        return true
+                    } else {
+                        // [EN] Defer touch double-tap editor opening until ACTION_UP without movement so rapid "tap + drag" expands range cleanly
+                        // [JA] タッチで「セルをタップしてすぐ押さえてドラッグ」した際にキーボードが誤起動しないよう、指を離すまで編集開始を待機
+                        pendingDoubleTapOpenEditor = true
+                    }
                 }
 
                 // Single-click on an inline checkbox toggles it immediately
                 val clickedBoxIdx = resolveClickedCheckboxIndex(anchorR, anchorC, event.x)
                 if (clickedBoxIdx != null) {
+                    pendingDoubleTapOpenEditor = false
                     viewModel.onToggleCellCheckbox(anchorR, anchorC, clickedBoxIdx)
                     container.bindState(viewModel.uiState.value)
                     container.notifySelectedCellChanged()
@@ -824,6 +852,7 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
 
                 // Shift+Click extends the 2D range selection from active cell to clicked cell!
                 if (isShiftHeld) {
+                    pendingDoubleTapOpenEditor = false
                     val startR = currentViewport.activeRow
                     val startC = currentViewport.activeCol
                     dragAnchorRow = startR
@@ -836,15 +865,60 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                     return true
                 }
 
-                // Immediate 0ms cell selection update; 1-finger touch scrolls smoothly unless Touch Range Select mode is active (H-12)
-                dragAnchorRow = anchorR
-                dragAnchorCol = anchorC
-                val isFingerTouch = event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER && !isMouse
-                isDraggingRangeSelection = event.pointerCount == 1 && (!isFingerTouch || isTouchRangeSelectMode)
-                viewModel.onSelectCell(anchorR, anchorC)
-                container.bindState(viewModel.uiState.value)
-                container.notifySelectedCellChanged()
-                invalidate()
+                // [EN] Smart Touch vs Pointer Range Selection:
+                //  - Mouse, Stylus (S-Pen), or Touch Range Select Mode (`isTouchRangeSelectMode == true`):
+                //    1-stroke drag on any cell immediately selects a 2D cell range.
+                //  - Default Finger Touch (`isTouchRangeSelectMode == false`):
+                //    1) Pressing inside the currently selected cell/range and dragging immediately expands/adjusts
+                //       the 2D cell selection (matching desktop mouse drag from the middle of a cell!).
+                //    2) Swiping on unselected cells scrolls the sheet smoothly without overwriting the current selection;
+                //       lifting without scrolling selects the tapped cell cleanly on ACTION_UP.
+                // [JA] スマートフォン・タブレットとマウス/ペンの最適共存設計：
+                //  - マウス・スタイラス（Sペン）・範囲選択モードON時：どのセルの中央からでも1ストロークで範囲選択。
+                //  - 通常の指タッチ時：選択中セル（または選択範囲内）を押してドラッグするとそのまま範囲選択が広がり、
+                //    未選択エリアをスワイプしたときは選択を崩さず滑らかにスクロール（タップ時は離した瞬間にそのセルを選択）。
+                val prevSnap = currentViewport
+                val prevR0 = min(prevSnap.selStartRow, prevSnap.selEndRow)
+                val prevR1 = max(prevSnap.selStartRow, prevSnap.selEndRow)
+                val prevC0 = min(prevSnap.selStartCol, prevSnap.selEndCol)
+                val prevC1 = max(prevSnap.selStartCol, prevSnap.selEndCol)
+                val isInsideCurrentSelection = anchorR in prevR0..prevR1 && anchorC in prevC0..prevC1
+                val isMultiCellSelection = prevR0 != prevR1 || prevC0 != prevC1
+
+                if (!isFingerTouch || isTouchRangeSelectMode) {
+                    dragAnchorRow = anchorR
+                    dragAnchorCol = anchorC
+                    isDraggingRangeSelection = event.pointerCount == 1
+                    viewModel.onSelectCell(anchorR, anchorC)
+                    container.bindState(viewModel.uiState.value)
+                    container.notifySelectedCellChanged()
+                    invalidate()
+                } else if (isInsideCurrentSelection) {
+                    isDraggingRangeSelection = event.pointerCount == 1
+                    if (!isMultiCellSelection) {
+                        dragAnchorRow = prevR0
+                        dragAnchorCol = prevC0
+                    } else {
+                        pendingTouchTapSelect = true
+                        pendingTouchTapRow = anchorR
+                        pendingTouchTapCol = anchorC
+                        if (anchorR == prevR1 && anchorC == prevC1) {
+                            dragAnchorRow = prevR0
+                            dragAnchorCol = prevC0
+                        } else {
+                            dragAnchorRow = anchorR
+                            dragAnchorCol = anchorC
+                        }
+                    }
+                    invalidate()
+                } else {
+                    dragAnchorRow = anchorR
+                    dragAnchorCol = anchorC
+                    isDraggingRangeSelection = false
+                    pendingTouchTapSelect = event.pointerCount == 1
+                    pendingTouchTapRow = anchorR
+                    pendingTouchTapCol = anchorC
+                }
             }
             return true
         }
@@ -864,6 +938,8 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                 isDraggingFormulaPointRange = false
                 isDraggingFormulaPointCol = false
                 isDraggingFormulaPointRow = false
+                pendingTouchTapSelect = false
+                pendingDoubleTapOpenEditor = false
                 val span = hypot(event.getX(1) - event.getX(0), event.getY(1) - event.getY(0))
                 initialTwoFingerSpanPx = span
                 lastTwoFingerSpanPx = span
@@ -1197,18 +1273,51 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                 return true
             }
             if (isDraggingRangeSelection && event.pointerCount == 1) {
-                val sheetXPt = pxToPt((event.x - rowHeaderWidthPx + scrollXPx).coerceAtLeast(0f))
-                val sheetYPt = pxToPt((event.y - colHeaderHeightPx + scrollYPx).coerceAtLeast(0f))
-                val curRow = currentViewport.rowAtY(sheetYPt)
-                val curCol = currentViewport.colAtX(sheetXPt)
-                viewModel.onSelectCell(dragAnchorRow, dragAnchorCol, curRow, curCol)
-                currentViewport = viewModel.uiState.value.viewport
+                // [EN] Smooth viewport edge auto-scroll when dragging a cell selection near the screen edges on phones/tablets
+                // [JA] スマホ・タブレットで画面端近くまで範囲選択ドラッグした際、自動的にシートをスクロール
+                val edgeZonePx = 28f * density
+                val maxAutoStepPx = (14f * density).roundToInt().coerceAtLeast(2)
+                if (width > rowHeaderWidthPx + edgeZonePx * 2f) {
+                    if (event.x > width - edgeZonePx) {
+                        scrollXPx = (scrollXPx + maxAutoStepPx).coerceIn(0, maxScrollXPx())
+                    } else if (event.x in rowHeaderWidthPx..(rowHeaderWidthPx + edgeZonePx) && scrollXPx > 0) {
+                        scrollXPx = (scrollXPx - maxAutoStepPx).coerceIn(0, maxScrollXPx())
+                    }
+                }
+                if (height > colHeaderHeightPx + edgeZonePx * 2f) {
+                    if (event.y > height - edgeZonePx) {
+                        scrollYPx = (scrollYPx + maxAutoStepPx).coerceIn(0, maxScrollYPx())
+                    } else if (event.y in colHeaderHeightPx..(colHeaderHeightPx + edgeZonePx) && scrollYPx > 0) {
+                        scrollYPx = (scrollYPx - maxAutoStepPx).coerceIn(0, maxScrollYPx())
+                    }
+                }
+
+                val curRow = screenYToSheetRow(event.y)
+                val curCol = screenXToSheetCol(event.x)
+                if (curRow != dragAnchorRow || curCol != dragAnchorCol) {
+                    hasMovedSinceDown = true
+                    pendingTouchTapSelect = false
+                    pendingDoubleTapOpenEditor = false
+                }
+                if (!pendingTouchTapSelect || hasMovedSinceDown) {
+                    val prevSnap = currentViewport
+                    if (prevSnap.selStartRow != dragAnchorRow ||
+                        prevSnap.selStartCol != dragAnchorCol ||
+                        prevSnap.selEndRow != curRow ||
+                        prevSnap.selEndCol != curCol
+                    ) {
+                        viewModel.onSelectCell(dragAnchorRow, dragAnchorCol, curRow, curCol)
+                        currentViewport = viewModel.uiState.value.viewport
+                        container.notifySelectedCellChanged()
+                    }
+                }
                 invalidate()
                 return true
             }
             if (!isMouse) {
                 if (!isPanningTouch && hypot(dx, dy) > scaledTouchSlop) {
                     isPanningTouch = true
+                    pendingTouchTapSelect = false
                 }
                 if (isPanningTouch) {
                     val stepX = (lastTouchX - event.x).roundToInt()
@@ -1427,7 +1536,29 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                 val vy = -(velocityTracker?.yVelocity ?: 0f).roundToInt()
                 scroller.fling(scrollXPx, scrollYPx, vx, vy, 0, maxScrollXPx(), 0, maxScrollYPx())
                 postInvalidateOnAnimation()
+            } else if (pendingDoubleTapOpenEditor &&
+                event.actionMasked == MotionEvent.ACTION_UP &&
+                !hasMovedSinceDown &&
+                !container.isContextMenuVisible &&
+                lastClickRow >= 0 &&
+                lastClickCol >= 0
+            ) {
+                viewModel.onSelectCell(lastClickRow, lastClickCol)
+                container.bindState(viewModel.uiState.value)
+                container.openInCellEditor(lastClickRow, lastClickCol, event.x, event.y)
+                invalidate()
+            } else if (pendingTouchTapSelect &&
+                event.actionMasked == MotionEvent.ACTION_UP &&
+                !hasMovedSinceDown &&
+                !container.isContextMenuVisible
+            ) {
+                viewModel.onSelectCell(pendingTouchTapRow, pendingTouchTapCol)
+                container.bindState(viewModel.uiState.value)
+                container.notifySelectedCellChanged()
+                invalidate()
             }
+            pendingTouchTapSelect = false
+            pendingDoubleTapOpenEditor = false
             isPanningTouch = false
             isDraggingFillHandle = false
             isDraggingSelectionMove = false

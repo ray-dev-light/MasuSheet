@@ -328,6 +328,12 @@ class MasuSheetNativeGridView(
     internal var isDraggingFormulaPointRow: Boolean = false
     internal var dragAnchorRow: Int = 0
     internal var dragAnchorCol: Int = 0
+    // [EN] Deferred single-cell selection on finger tap in scroll mode so 1-finger scrolling does not overwrite active selection
+    // [JA] スクロールモードでの1本指スワイプ時に選択範囲が崩れないよう、タップ確定時（ACTION_UP）まで単一セル選択を遅延する状態
+    internal var pendingTouchTapSelect: Boolean = false
+    internal var pendingTouchTapRow: Int = 0
+    internal var pendingTouchTapCol: Int = 0
+    internal var pendingDoubleTapOpenEditor: Boolean = false
 
     internal var lastClickRow: Int = -1
     internal var lastClickCol: Int = -1
@@ -417,9 +423,12 @@ class MasuSheetNativeGridView(
                     !container.canPointFormulaReference() &&
                     !hasMovedSinceDown &&
                     !isPointOnSelectionCornerHandle(downX, downY) &&
-                    !isPointOnSelectionCornerHandle(e.x, e.y)
+                    !isPointOnSelectionCornerHandle(e.x, e.y) &&
+                    !isPointOnTopLeftSelectionRangeHandle(downX, downY)
                 ) {
                     isDraggingRangeSelection = false
+                    pendingTouchTapSelect = false
+                    pendingDoubleTapOpenEditor = false
                     handleRightClickAt(e.x, e.y)
                 }
             }
@@ -627,14 +636,35 @@ class MasuSheetNativeGridView(
     }
 
     /**
-     * A7: Hit-tests the top/left/bottom/right border of the selection rectangle (excluding the bottom-right AutoFill corner)
-     * so dragging the selection border moves the selected cells (`Drag::Move`, `interact.rs:457-459`).
+     * [EN] Hit-tests the circular top-left range-adjustment handle (`●`) shown on multi-cell selections
+     * so touch/stylus/mouse users can resize the top-left corner of an existing cell range.
+     * [JA] 複数セル選択時に左上に表示される丸型の範囲調整ハンドル（`●`）の当たり判定を行います。
+     */
+    fun isPointOnTopLeftSelectionRangeHandle(screenX: Float, screenY: Float): Boolean {
+        val snap = currentViewport
+        val r0 = min(snap.selStartRow, snap.selEndRow)
+        val r1 = max(snap.selStartRow, snap.selEndRow)
+        val c0 = min(snap.selStartCol, snap.selEndCol)
+        val c1 = max(snap.selStartCol, snap.selEndCol)
+        if (r0 == r1 && c0 == c1) return false
+        if (screenX < rowHeaderWidthPx || screenY < colHeaderHeightPx) return false
+        val selRect = getSelectionScreenRect()
+        if (selRect.isEmpty) return false
+        val hitRadius = 10.5f * density
+        return hypot(screenX - selRect.left, screenY - selRect.top) <= hitRadius
+    }
+
+    /**
+     * [EN] A7: Hit-tests the top/left/bottom/right border of the selection rectangle (excluding handles)
+     * for desktop mouse drag-to-move (`Drag::Move`, `interact.rs:457-459`).
+     * [JA] マウス操作時に選択枠の境界線（ハンドルを除く）をドラッグしてセル内容を移動するための当たり判定です。
      */
     fun isPointOnSelectionBorder(screenX: Float, screenY: Float): Boolean {
         if (isPointOnSelectionCornerHandle(screenX, screenY)) return false
+        if (isPointOnTopLeftSelectionRangeHandle(screenX, screenY)) return false
         val selRect = getSelectionScreenRect()
         if (selRect.isEmpty) return false
-        val borderSlop = 5.5f * density
+        val borderSlop = 3.5f * density
         val nearTop = abs(screenY - selRect.top) <= borderSlop && screenX in (selRect.left - borderSlop)..(selRect.right + borderSlop)
         val nearBottom = abs(screenY - selRect.bottom) <= borderSlop && screenX in (selRect.left - borderSlop)..(selRect.right - 10f * density)
         val nearLeft = abs(screenX - selRect.left) <= borderSlop && screenY in (selRect.top - borderSlop)..(selRect.bottom + borderSlop)

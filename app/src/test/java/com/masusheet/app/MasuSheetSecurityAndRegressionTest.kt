@@ -466,6 +466,73 @@ class MasuSheetSecurityAndRegressionTest {
     }
 
     @Test
+    fun smartphoneAndTabletTouch_selectedCellDragExpandsRangeWithoutMovingCell() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val vm = createTestViewModel(blank = true)
+        vm.onCommitCellEdit(2, 2, "KeepInC3")
+        val container = MasuSheetNativeSheetContainer(context, vm)
+        container.bindState(vm.uiState.value)
+        container.measure(
+            MeasureSpec.makeMeasureSpec(1080, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(1920, MeasureSpec.EXACTLY)
+        )
+        container.layout(0, 0, 1080, 1920)
+        val grid = container.gridView
+        assertFalse(vm.uiState.value.isTouchRangeSelectMode)
+
+        // 1. Tap C3 (row=2, col=2) with 1 finger -> selects C3 on ACTION_UP
+        val c3Rect = grid.getCellScreenRect(2, 2)
+        val t0 = SystemClock.uptimeMillis()
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t0, t0, MotionEvent.ACTION_DOWN, c3Rect.centerX(), c3Rect.centerY()))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t0, t0 + 20, MotionEvent.ACTION_UP, c3Rect.centerX(), c3Rect.centerY()))
+        assertEquals(2, vm.uiState.value.viewport.activeRow)
+        assertEquals(2, vm.uiState.value.viewport.activeCol)
+
+        // 2. Immediately (within 180ms!) press inside selected C3 (even near top border where mouse border-move lives) and drag to E7
+        //    -> Must NOT open in-cell editor mid-drag, must NOT cut/move C3's value, and MUST expand selection to C3:E7!
+        val e7Rect = grid.getCellScreenRect(6, 4)
+        val nearTopInsideC3Y = c3Rect.top + 2f * grid.resources.displayMetrics.density
+        val t1 = t0 + 180
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t1, t1, MotionEvent.ACTION_DOWN, c3Rect.centerX(), nearTopInsideC3Y))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t1, t1 + 25, MotionEvent.ACTION_MOVE, e7Rect.centerX(), e7Rect.centerY()))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t1, t1 + 50, MotionEvent.ACTION_UP, e7Rect.centerX(), e7Rect.centerY()))
+
+        assertFalse("Rapid tap-then-drag must not open in-cell editor", container.isEditingInCell)
+        assertEquals("C3 value must not be cut/moved on finger drag", "KeepInC3", vm.uiState.value.viewport.cellAt(2, 2)?.displayText)
+        assertEquals("", vm.uiState.value.viewport.cellAt(6, 4)?.displayText.orEmpty())
+        assertEquals(0, grid.scrollYPx)
+        assertEquals(2, vm.uiState.value.viewport.selStartRow)
+        assertEquals(2, vm.uiState.value.viewport.selStartCol)
+        assertEquals(6, vm.uiState.value.viewport.selEndRow)
+        assertEquals(4, vm.uiState.value.viewport.selEndCol)
+
+        // 3. Swiping up on an unselected cell scrolls the sheet WITHOUT losing the C3:E7 selection!
+        val unSelectedStart = grid.getCellScreenRect(14, 1)
+        val t2 = t1 + 600
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t2, t2, MotionEvent.ACTION_DOWN, unSelectedStart.centerX(), unSelectedStart.centerY()))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t2, t2 + 25, MotionEvent.ACTION_MOVE, unSelectedStart.centerX(), unSelectedStart.centerY() - 240f))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t2, t2 + 50, MotionEvent.ACTION_UP, unSelectedStart.centerX(), unSelectedStart.centerY() - 240f))
+        assertTrue("1-finger swipe outside selection must scroll", grid.scrollYPx > 0)
+        assertEquals("Selection C3:E7 must stay intact during scroll", 2, vm.uiState.value.viewport.selStartRow)
+        assertEquals(6, vm.uiState.value.viewport.selEndRow)
+
+        // 4. Dragging the circular top-left selection handle resizes C3:E7 -> B2:E7
+        grid.scrollYPx = 0
+        container.bindState(vm.uiState.value)
+        val selRect = grid.getSelectionScreenRect()
+        assertTrue(grid.isPointOnTopLeftSelectionRangeHandle(selRect.left, selRect.top))
+        val b2Rect = grid.getCellScreenRect(1, 1)
+        val t3 = t2 + 600
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t3, t3, MotionEvent.ACTION_DOWN, selRect.left, selRect.top))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t3, t3 + 25, MotionEvent.ACTION_MOVE, b2Rect.centerX(), b2Rect.centerY()))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t3, t3 + 50, MotionEvent.ACTION_UP, b2Rect.centerX(), b2Rect.centerY()))
+        assertEquals(1, kotlin.math.min(vm.uiState.value.viewport.selStartRow, vm.uiState.value.viewport.selEndRow))
+        assertEquals(1, kotlin.math.min(vm.uiState.value.viewport.selStartCol, vm.uiState.value.viewport.selEndCol))
+        assertEquals(6, kotlin.math.max(vm.uiState.value.viewport.selStartRow, vm.uiState.value.viewport.selEndRow))
+        assertEquals(4, kotlin.math.max(vm.uiState.value.viewport.selStartCol, vm.uiState.value.viewport.selEndCol))
+    }
+
+    @Test
     fun pasteSpecialValues_hiddenRowPreservation_formulaLiteralShift_andVbaStringConcat() {
         val vm = createTestViewModel(blank = true)
 

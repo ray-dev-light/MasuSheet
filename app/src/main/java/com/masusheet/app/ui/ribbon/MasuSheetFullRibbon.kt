@@ -313,6 +313,16 @@ fun MasuSheetFullRibbon(
                 onClick = { onCommand("edit.redo", "{}") }
             )
             MasuSheetPillButton(
+                label = if (state.isTouchRangeSelectMode) {
+                    if (isEn) "👆 Range Select:ON" else "👆 範囲選択:ON"
+                } else {
+                    if (isEn) "👆 Range Select" else "👆 範囲選択"
+                },
+                highlight = state.isTouchRangeSelectMode,
+                tag = "ms_btn_touch_range_select",
+                onClick = onToggleTouchRangeSelectMode
+            )
+            MasuSheetPillButton(
                 label = if (state.isAiPanelOpen) "✨ AI アシスタント:ON" else "✨ AI アシスタント",
                 highlight = state.isAiPanelOpen,
                 tag = "ms_btn_ai_toggle",

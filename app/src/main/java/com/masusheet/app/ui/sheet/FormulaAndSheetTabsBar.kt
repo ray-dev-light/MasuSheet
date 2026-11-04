@@ -172,7 +172,9 @@ fun MasuSheetNativeFormulaBar(
     onCommitFormula: () -> Unit,
     onCancelFormula: () -> Unit,
     onOpenFunctionWizard: () -> Unit = {},
-    onNavigateToAddress: (String) -> Unit = {}
+    onNavigateToAddress: (String) -> Unit = {},
+    isTouchRangeSelectMode: Boolean = false,
+    onToggleTouchRangeSelectMode: () -> Unit = {}
 ) {
     val isEn = LocalAppLanguage.current == "en"
     val isM3 = LocalMaterial3Ui.current
@@ -248,6 +250,44 @@ fun MasuSheetNativeFormulaBar(
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Serif
+                )
+            }
+
+            // [EN] 1-tap Touch Range Select mode toggle for smartphones & tablets (1-stroke cell range drag anywhere)
+            // [JA] スマートフォン・タブレット向けワンストローク範囲選択モードの1タップ切替チップ
+            Box(
+                modifier = Modifier
+                    .testTag("ms_btn_formula_touch_select")
+                    .clip(RoundedCornerShape(boxRadius))
+                    .background(
+                        if (isTouchRangeSelectMode) {
+                            if (isDarkTheme) Color(0xFF14532D) else Color(0xFFDCFCE7)
+                        } else {
+                            if (isDarkTheme) Color(0xFF1E293B) else Color(0xFFF3F2F1)
+                        }
+                    )
+                    .border(
+                        1.dp,
+                        if (isTouchRangeSelectMode) Color(0xFF1F9D55) else borderCol,
+                        RoundedCornerShape(boxRadius)
+                    )
+                    .clickable(onClick = onToggleTouchRangeSelectMode)
+                    .padding(horizontal = 7.dp, vertical = 3.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (isTouchRangeSelectMode) {
+                        if (isEn) "👆 Select:ON" else "👆 範囲選択:ON"
+                    } else {
+                        if (isEn) "👆 Select" else "👆 範囲選択"
+                    },
+                    color = if (isTouchRangeSelectMode) {
+                        if (isDarkTheme) Color(0xFF4ADE80) else Color(0xFF166534)
+                    } else {
+                        textPrimary
+                    },
+                    fontSize = 11.sp,
+                    fontWeight = if (isTouchRangeSelectMode) FontWeight.Bold else FontWeight.Medium
                 )
             }
 

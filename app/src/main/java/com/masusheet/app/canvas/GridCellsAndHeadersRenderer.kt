@@ -1062,6 +1062,16 @@ internal fun MasuSheetNativeGridView.renderSelectionAndHeadersOverlay(canvas: Ca
     }
     canvas.drawRect(selLeft, selTop, selRight, selBottom, selectionBorderPaint)
 
+    // [EN] Draw circular top-left range-adjustment handle on multi-cell selections for intuitive touch resizing
+    // [JA] 複数セル選択時、タッチでも直感的に左上角から選択範囲を調整できる丸型ハンドルを描画
+    if ((r0 != r1 || c0 != c1) && !isDraggingFillHandle && selectedObjectId == null) {
+        val tlRadius = 5.0f * density
+        checkboxBoxPaint.style = Paint.Style.FILL
+        checkboxBoxPaint.color = 0xFFFFFFFF.toInt()
+        canvas.drawCircle(selLeft, selTop, tlRadius + 1.5f * density, checkboxBoxPaint)
+        canvas.drawCircle(selLeft, selTop, tlRadius, handlePaint)
+    }
+
     // 1b-move (A7). Drag Selection Border Move Preview Rectangle (`Drag::Move`, `interact.rs:457-459`)
     if (isDraggingSelectionMove) {
         val rowSpan = (moveSrcEndRow - moveSrcStartRow).coerceAtLeast(0)

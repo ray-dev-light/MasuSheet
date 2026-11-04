@@ -740,6 +740,11 @@ fun MasuSheetScreen(
                         onNavigateToAddress = { addrText ->
                             commitActiveInCellEditIfNeeded()
                             viewModel.onNavigateToAddressOrRange(addrText)
+                        },
+                        isTouchRangeSelectMode = state.isTouchRangeSelectMode,
+                        onToggleTouchRangeSelectMode = {
+                            commitActiveInCellEditIfNeeded()
+                            viewModel.onToggleTouchRangeSelectMode()
                         }
                     )
                 }

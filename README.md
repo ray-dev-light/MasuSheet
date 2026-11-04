@@ -5,7 +5,7 @@
 
 **[日本語版 README はこちら (README.ja.md)](./README.ja.md)**
 
-**MasuSheet** ("Masu" = grid cell in Japanese) is a high-performance native Android spreadsheet application powered by a Rust calculation engine (`libmasusheet_jni.so`), a 2-layer hardware-accelerated Android `Canvas` sheet view, and a modular Jetpack Compose UI. Designed from the ground up for Android tablets, ChromeOS / Android Desktop multi-window environments, and smartphones.
+**MasuSheet** ("Masu" = grid cell in Japanese) is a high-performance native Android spreadsheet application powered by a Rust calculation engine (`libmasusheet_jni.so`), a 2-layer hardware-accelerated Android `Canvas` sheet view, and a modular Jetpack Compose UI. Designed from the ground up for Android smartphones, foldables, tablets, and Googlebook OS (including multi-window environments).
 
 ![MasuSheet workspace with 15-tab ribbon, interactive XY scatter chart with on-sheet range highlights, and cell context menu](./docs/screenshots/masusheet-overview.png)
 
@@ -17,7 +17,7 @@
 - **2-Layer Hardware Canvas Grid (`25%`–`400%` Zoom)**:
   - **Layer 1 (Static Cell Cache)**: Renders 4-quadrant Freeze Panes, merged cells (including off-screen anchors), borders, conditional formatting, sparklines, wrapped text, and interactive checkboxes (`□` / `☑`) to a cached hardware bitmap.
   - **Layer 2 (Interactive Overlay)**: Sub-millisecond rendering of cell selections, row/column AutoFit & resize guides, formula reference highlights, floating images, shapes, and charts.
-  - **Touch & Desktop Input**: 1-finger touch panning with instant toggle to touch range-select mode, focal-point pinch-to-zoom, mouse wheel / trackpad gestures, right-click context menus, and hardware keyboard shortcuts.
+  - **Touch, Stylus, & Mouse/Keyboard Input**: Drag directly from the active cell (or top-left selection handle) to expand cell selections by touch, swipe unselected areas to scroll smoothly, or toggle one-stroke **Touch Range Select** mode (`👆 Select`); full support for focal-point pinch-to-zoom, mouse wheel / trackpad gestures, right-click context menus, and hardware keyboard shortcuts.
 - **15-Tab Ribbon & Material 3 / Classic UI Toggle**: Home, Insert, Draw, Page Layout, Formulas, Data, Review, View, Automate, Developer, plus contextual tabs (Table Design, Chart Design, PivotTable Analyze, Shape Format, Picture Format) across 292 commands, switchable live between Material 3 and Classic layouts in both Light and Dark themes.
 - **Charts, Shapes, & Lossless Image Workflow**:
   - **10 Categories × 32 Chart Subtypes**: Column, Line, Pie/Doughnut, Bar, Area, XY Scatter, Stock, Radar, Combo, and Waterfall charts with on-sheet X/Y source range handles, per-element text color customization, and finite-safe axis formatting.
