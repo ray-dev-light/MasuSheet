@@ -101,6 +101,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.compositionLocalOf
@@ -246,6 +247,28 @@ fun MasuSheetScreen(
             if (container.isContextMenuVisible) {
                 container.dismissContextMenu()
             }
+        }
+    }
+
+    val latestFormulaDraft by rememberUpdatedState(formulaDraft)
+    DisposableEffect(viewModel) {
+        viewModel.beforeExternalNavigationCommitHook = {
+            val wasEditingInCell = sheetContainerRef?.isEditingInCell == true
+            commitActiveInCellEditIfNeeded()
+            if (!wasEditingInCell) {
+                val curVp = viewModel.uiState.value.viewport
+                if (latestFormulaDraft != curVp.activeEditText) {
+                    viewModel.onCommitCellEdit(
+                        curVp.activeRow,
+                        curVp.activeCol,
+                        latestFormulaDraft,
+                        moveDeltaRow = 0
+                    )
+                }
+            }
+        }
+        onDispose {
+            viewModel.beforeExternalNavigationCommitHook = null
         }
     }
 

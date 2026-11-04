@@ -41,9 +41,12 @@
                 <data android:mimeType="text/csv" />
                 <data android:mimeType="text/tab-separated-values" />
             </intent-filter>
-            <meta-data
-                android:name="android.app.shortcuts"
-                android:resource="@xml/shortcuts" />
+            <!-- [EN] Shelf/Taskbar shortcuts are registered exclusively as dynamic shortcuts in registerShelfWindowShortcuts() -->
+            <!--      with FLAG_ACTIVITY_SINGLE_TOP | FLAG_ACTIVITY_CLEAR_TOP. Static <shortcuts> XML is intentionally omitted  -->
+            <!--      because Android's ShortcutParser forces FLAG_ACTIVITY_CLEAR_TASK, which would destroy open workbooks.     -->
+            <!-- [JA] シェルフ／タスクバーの右クリックショートカットは registerShelfWindowShortcuts() の動的ショートカット2件のみ -->
+            <!--      を使用します。静的 shortcuts.xml は Android の仕様で FLAG_ACTIVITY_CLEAR_TASK が強制付与され入力中のデータ -->
+            <!--      が消去される原因および4件重複の原因になるため宣言しません。                                               -->
         </activity>
 
         <activity

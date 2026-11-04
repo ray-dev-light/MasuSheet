@@ -1,7 +1,11 @@
 package com.masusheet.app
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ShortcutManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.SystemClock
@@ -20,6 +24,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
@@ -587,5 +593,86 @@ class MasuSheetSecurityAndRegressionTest {
         assertEquals("Item-1", vm.uiState.value.viewport.cellAt(0, 0)?.displayText)
         assertEquals("Item-2", vm.uiState.value.viewport.cellAt(1, 0)?.displayText)
         assertEquals("Item-3", vm.uiState.value.viewport.cellAt(2, 0)?.displayText)
+    }
+
+    @Test
+    fun shelfShortcuts_onlyTwoDynamicShortcutsRegistered_andPreserveEnteredDataOnNewWindowAndNewBlank() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Static <meta-data android:name="android.app.shortcuts"> MUST NOT exist on MainActivity
+        //    (prevents 4-item Shelf menu duplication and Android ShortcutParser's forced FLAG_ACTIVITY_CLEAR_TASK data wipe)
+        val activityInfo = ctx.packageManager.getActivityInfo(
+            ComponentName(ctx, MainActivity::class.java),
+            PackageManager.GET_META_DATA
+        )
+        assertFalse(
+            "Static android.app.shortcuts metadata must be absent to prevent 4-item duplication and CLEAR_TASK data loss",
+            activityInfo.metaData?.containsKey("android.app.shortcuts") == true
+        )
+
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val sm = ctx.getSystemService(ShortcutManager::class.java)
+            assertNotNull(sm)
+            val dynShortcuts = sm!!.dynamicShortcuts
+            assertEquals("Exactly 2 Shelf shortcuts must be registered", 2, dynShortcuts.size)
+            assertEquals(
+                listOf("dyn_new_window_workbook", "dyn_new_blank_workbook_window"),
+                dynShortcuts.map { it.id }
+            )
+
+            val newWinIntent = dynShortcuts[0].intent!!
+            val newBlankIntent = dynShortcuts[1].intent!!
+            for (shortcutIntent in listOf(newWinIntent, newBlankIntent)) {
+                val flags = shortcutIntent.flags
+                assertTrue(
+                    "Shortcut intent must carry FLAG_ACTIVITY_SINGLE_TOP",
+                    (flags and Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0
+                )
+                assertTrue(
+                    "Shortcut intent must carry FLAG_ACTIVITY_CLEAR_TOP",
+                    (flags and Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0
+                )
+                assertEquals(
+                    "Shortcut intent must NEVER carry destructive FLAG_ACTIVITY_CLEAR_TASK",
+                    0,
+                    flags and Intent.FLAG_ACTIVITY_CLEAR_TASK
+                )
+            }
+
+            // 2. Enter sheet data in Book1.xlsx (plus an uncommitted edit via beforeExternalNavigationCommitHook)
+            val vm = activity.activeViewModelForTest
+            val book1Id = vm.uiState.value.activeWorkbookId
+            vm.onCommitCellEdit(1, 1, "保持される入力データ")
+            var pendingDraft = "未確定セル入力"
+            vm.beforeExternalNavigationCommitHook = {
+                if (pendingDraft.isNotEmpty()) {
+                    vm.onCommitCellEdit(2, 1, pendingDraft, moveDeltaRow = 0)
+                    pendingDraft = ""
+                }
+            }
+
+            // 3. Trigger Shelf "新しいウィンドウ" (New Window) via onNewIntent -> spawns SecondaryWorkbookActivity without losing Book1 data
+            Shadows.shadowOf(activity).clearNextStartedActivities()
+            controller.newIntent(newWinIntent)
+            val startedWindowIntent = Shadows.shadowOf(activity).nextStartedActivity
+            assertNotNull("Expected SecondaryWorkbookActivity to be launched", startedWindowIntent)
+            assertEquals(SecondaryWorkbookActivity::class.java.name, startedWindowIntent.component?.className)
+            assertEquals("保持される入力データ", vm.uiState.value.viewport.cellAt(1, 1)?.displayText)
+            assertEquals("未確定セル入力", vm.uiState.value.viewport.cellAt(2, 1)?.displayText)
+
+            // 4. Trigger Shelf "新規空白ブック" (New Blank Book) via onNewIntent -> adds Book2.xlsx while keeping Book1.xlsx intact
+            controller.newIntent(newBlankIntent)
+            assertEquals("Book2.xlsx", vm.uiState.value.workbookTitle)
+            assertEquals(2, vm.uiState.value.openWorkbooks.size)
+
+            // Switch back to Book1.xlsx and verify every entered cell is still 100% intact
+            assertTrue(vm.onSwitchOpenWorkbook(book1Id))
+            assertEquals("保持される入力データ", vm.uiState.value.viewport.cellAt(1, 1)?.displayText)
+            assertEquals("未確定セル入力", vm.uiState.value.viewport.cellAt(2, 1)?.displayText)
+        } finally {
+            controller.destroy()
+        }
     }
 }

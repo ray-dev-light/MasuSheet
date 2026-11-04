@@ -166,15 +166,42 @@ open class MainActivity : ComponentActivity() {
         MasuSheetViewModel.provideFactory(this)
     }
 
-    private fun handleWindowIntent(intent: Intent?) {
+    internal val activeViewModelForTest: MasuSheetViewModel
+        get() = viewModel
+
+    /**
+     * [EN] Routes incoming Shelf/Taskbar shortcut intents, multi-window UUID handoffs (`C-02`),
+     *      and document open intents without ever discarding existing workbook sessions or active cell edits.
+     * [JA] シェルフの右クリックショートカット、UUID検証付き別ウィンドウ引き継ぎ (`C-02`)、およびファイル起動 Intent を、
+     *      既存のブックデータや入力途中のセル編集を一切失わずに処理します。
+     */
+    private fun handleWindowIntent(intent: Intent?, isNewIntent: Boolean) {
         if (intent == null) return
+        if (isNewIntent) {
+            viewModel.flushPendingUiEditsBeforeNavigation()
+        }
+
         val shortcutMode = intent.getStringExtra("masusheet_shortcut_mode")
         if (shortcutMode == "new_window") {
-            launchNewWorkbookWindow(this, blankWorkbook = false)
+            // [EN] When MainActivity is already open (isNewIntent == true), spawn an independent SecondaryWorkbookActivity
+            //      window while leaving all workbooks in MainActivity untouched. On a cold launch (isNewIntent == false),
+            //      MainActivity itself just opened as the new window.
+            // [JA] 既に MainActivity が開いている状態（isNewIntent == true）では既存シートをそのまま保持して別ウィンドウを起動し、
+            //      未起動からの初回起動時（isNewIntent == false）はこの MainActivity 自体を新しいウィンドウとして開きます。
+            if (isNewIntent) {
+                launchNewWorkbookWindow(this, blankWorkbook = false)
+            }
             return
         }
         if (shortcutMode == "new_blank") {
-            viewModel.onCreateNewBlankWorkbookSession()
+            // [EN] Preserve all existing workbooks in the top Switch Workbook bar and add a new blank workbook session
+            //      whenever MainActivity is already open or holds any user state; on a fresh cold start, Book1.xlsx is already blank.
+            // [JA] 起動中のウィンドウがある場合は既存ブックを上部の切替バーに保持したまま新規空白ブックを追加し、
+            //      コールドスタート時は初期化済みの空白 Book1.xlsx をそのまま使用します。
+            val curState = viewModel.uiState.value
+            if (isNewIntent || curState.isDirty || curState.openWorkbooks.size > 1 || curState.viewport.cells.isNotEmpty()) {
+                viewModel.onCreateNewBlankWorkbookSession()
+            }
             return
         }
 
@@ -191,7 +218,10 @@ open class MainActivity : ComponentActivity() {
                 }
             }
             winMode == "blank" || winMode == "new_blank" -> {
-                viewModel.onCreateNewBlankWorkbookSession()
+                val curState = viewModel.uiState.value
+                if (isNewIntent || curState.isDirty || curState.openWorkbooks.size > 1 || curState.viewport.cells.isNotEmpty()) {
+                    viewModel.onCreateNewBlankWorkbookSession()
+                }
             }
             !incomingUri.isNullOrBlank() && !incomingUri.startsWith("masusheet://") -> {
                 viewModel.onOpenDocumentUri(incomingUri)
@@ -203,9 +233,11 @@ open class MainActivity : ComponentActivity() {
         window.setBackgroundDrawable(ColorDrawable(MasuSheetConfig.DARK_BG_COLOR_INT))
         super.onCreate(savedInstanceState)
 
-        registerShelfWindowShortcuts(this)
+        if (this !is SecondaryWorkbookActivity) {
+            registerShelfWindowShortcuts(this)
+        }
         if (savedInstanceState == null) {
-            handleWindowIntent(intent)
+            handleWindowIntent(intent, isNewIntent = false)
         }
 
         setContent {
@@ -242,12 +274,15 @@ open class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleWindowIntent(intent)
+        setIntent(intent)
+        handleWindowIntent(intent, isNewIntent = true)
     }
 }
 
 /**
- * Secondary independent OS Window Activity (`documentLaunchMode="always"`, `launchMode="standard"`)
- * launched from the Android Desktop / ChromeOS Shelf icon right-click menu or in-app `🪟 別ウィンドウ` button.
+ * [EN] Secondary independent OS Window Activity (`documentLaunchMode="always"`, `launchMode="standard"`, `:window2` process)
+ *      launched from the Shelf/Taskbar right-click menu (`New Window`) or in-app `🪟 New Window` button.
+ * [JA] シェルフ／タスクバーの右クリックメニュー（「新しいウィンドウ」）やアプリ内の「🪟 別ウィンドウ」ボタンから起動される
+ *      独立プロセス (`:window2`) のセカンダリウィンドウ Activity です。
  */
 class SecondaryWorkbookActivity : MainActivity()

@@ -166,6 +166,23 @@ class MasuSheetViewModel(
 
     internal var scriptDispatcher: ((String) -> Unit)? = null
 
+    /**
+     * [EN] Optional UI callback registered by [MasuSheetScreen] so external OS intents
+     *      (e.g., Shelf/Taskbar shortcuts in `MainActivity.onNewIntent`) commit any active in-cell
+     *      or formula-bar edit before switching workbook sessions or opening a secondary window.
+     * [JA] シェルフのショートカット等の外部 Intent (`onNewIntent`) でブック切替や別ウィンドウ起動を行う直前に、
+     *      セル内エディタや数式バーで入力途中の未確定テキストを自動確定するためのフックです。
+     */
+    internal var beforeExternalNavigationCommitHook: (() -> Unit)? = null
+
+    /**
+     * [EN] Flushes any uncommitted UI cell/formula edit prior to external shortcut or document navigation.
+     * [JA] 外部ショートカットやファイル読込による画面遷移前に、入力途中のセル編集を確定します。
+     */
+    fun flushPendingUiEditsBeforeNavigation() {
+        beforeExternalNavigationCommitHook?.invoke()
+    }
+
     fun setScriptDispatcher(dispatcher: ((String) -> Unit)?) {
         scriptDispatcher = dispatcher
     }

@@ -439,21 +439,32 @@ internal fun mergeWorkbookSessionIntoMainWindow(
 }
 
 /**
- * [EN] UI/application helper `registerShelfWindowShortcuts` (register shelf window shortcuts).
- * [JA] `registerShelfWindowShortcuts` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Registers the 2 non-destructive dynamic Shelf/Taskbar shortcuts (`New Window` and `New Blank Book`).
+ *      Static `res/xml/shortcuts.xml` is intentionally avoided because Android's `ShortcutParser` forces
+ *      `Intent.FLAG_ACTIVITY_CLEAR_TASK` on static shortcuts, which destroys the running `MainActivity`
+ *      and wipes unsaved sheet edits. Using dynamic shortcuts with `FLAG_ACTIVITY_SINGLE_TOP` routes
+ *      cleanly to `MainActivity.onNewIntent()` without recreating the Activity or duplicating menu items.
+ * [JA] シェルフ／タスクバー右クリック用の動的ショートカット2件（「新しいウィンドウ」「新規空白ブック」）のみを登録します。
+ *      静的 `shortcuts.xml` を併用すると4件に重複するうえ、Android の仕様で `FLAG_ACTIVITY_CLEAR_TASK` が強制付与されて
+ *      入力中のシートが白紙化するため、既存データを保持したまま `MainActivity.onNewIntent()` へ安全に配送する
+ *      `FLAG_ACTIVITY_SINGLE_TOP` 付き動的ショートカットに一本化しています。
  */
 internal fun registerShelfWindowShortcuts(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1) return
     runCatching {
         val sm = context.getSystemService(android.content.pm.ShortcutManager::class.java) ?: return
         val icon = android.graphics.drawable.Icon.createWithResource(context, R.mipmap.ic_launcher)
+        val nonDestructiveFlags =
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
 
         // `M-12`: Dynamic launcher shortcuts target exported MainActivity and forward safely to internal SecondaryWorkbookActivity
         val newWinIntent = Intent(context, MainActivity::class.java).apply {
             action = Intent.ACTION_VIEW
             data = Uri.parse("masusheet://shortcut/new_window")
             putExtra("masusheet_shortcut_mode", "new_window")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(nonDestructiveFlags)
         }
         val newWinShortcut = android.content.pm.ShortcutInfo.Builder(context, "dyn_new_window_workbook")
             .setShortLabel(context.getString(R.string.shortcut_new_window_short))
@@ -466,7 +477,7 @@ internal fun registerShelfWindowShortcuts(context: Context) {
             action = Intent.ACTION_VIEW
             data = Uri.parse("masusheet://shortcut/new_blank")
             putExtra("masusheet_shortcut_mode", "new_blank")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(nonDestructiveFlags)
         }
         val blankWinShortcut = android.content.pm.ShortcutInfo.Builder(context, "dyn_new_blank_workbook_window")
             .setShortLabel(context.getString(R.string.shortcut_new_blank_short))

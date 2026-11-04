@@ -133,6 +133,8 @@ android {
                         )
                     ).distinct().joinToString(File.pathSeparator)
                 testTask.systemProperty("java.library.path", jniPaths)
+                testTask.jvmArgs("-Djava.library.path=$jniPaths")
+                testTask.environment("LD_LIBRARY_PATH", jniPaths)
             }
         }
     }
