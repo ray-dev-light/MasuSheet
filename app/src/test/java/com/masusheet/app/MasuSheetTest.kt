@@ -26,6 +26,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
 class FakePreferenceStore : PreferenceStore {
@@ -70,6 +71,7 @@ class FakeDocumentIoGateway : DocumentIoGateway {
 
 @RunWith(AndroidJUnit4::class)
 @Config(application = Application::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class MasuSheetTest {
 
     @Test
