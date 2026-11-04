@@ -7,6 +7,8 @@
 
 **MasuSheet（マスシート）** は、Rust 製スプレッドシート計算エンジン（`libmasusheet_jni.so`）、2層ハードウェアアクセラレーション `Canvas` グリッド描画、および機能別にモジュール分割された Jetpack Compose UI を組み合わせた Android 向けネイティブ表計算アプリケーションです。Android タブレット、Android デスクトップ／ChromeOS のマルチウィンドウ環境、スマートフォンのすべてで軽快に動作するよう設計されています。
 
+![MasuSheet のワークスペース画面（15タブリボン・シート上の範囲参照枠付き散布図グラフ・右クリックメニュー）](./docs/screenshots/masusheet-overview.png)
+
 ---
 
 ## 主な機能

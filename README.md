@@ -7,6 +7,8 @@
 
 **MasuSheet** ("Masu" = grid cell in Japanese) is a high-performance native Android spreadsheet application powered by a Rust calculation engine (`libmasusheet_jni.so`), a 2-layer hardware-accelerated Android `Canvas` sheet view, and a modular Jetpack Compose UI. Designed from the ground up for Android tablets, ChromeOS / Android Desktop multi-window environments, and smartphones.
 
+![MasuSheet workspace with 15-tab ribbon, interactive XY scatter chart with on-sheet range highlights, and cell context menu](./docs/screenshots/masusheet-overview.png)
+
 ---
 
 ## Key Features
