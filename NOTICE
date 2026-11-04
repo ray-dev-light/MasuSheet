@@ -1,18 +1,24 @@
-GridCraft
+MasuSheet
+Copyright (c) 2026 MasuSheet contributors.
+Forked from GridCraft (https://github.com/storytold/gridcraft, commit 55850841d39f030fb42f0a07e54903decea7b067):
 Copyright (c) 2026 ArtCraft Team and the GridCraft contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option
 (LICENSE-MIT, LICENSE-APACHE).
 
-The ArtCraft name, wordmark and logos in docs/brand/ are trademarks of the ArtCraft Team. They are
-not open source and are not covered by the license above; their terms are in
-docs/brand/LICENSE-brand.txt.
+Note: Upstream ArtCraft trademark files formerly in docs/brand/ are excluded from this repository.
+MasuSheet is an independent open-source Android spreadsheet application and is not affiliated with
+or endorsed by the ArtCraft Team or Microsoft Corporation.
 
 Third-party material
 
-This product bundles third-party material under its own licenses, listed below. The per-file
-list (author, source, license) is in ATTRIBUTION.md.
+This product bundles or links third-party open-source material under its own licenses, listed below:
+- AndroidX, Jetpack Compose, Material3, and Android Jetpack libraries: Copyright The Android Open Source Project, licensed under the Apache License, Version 2.0.
+- Kotlin Standard Library and Kotlinx Coroutines: Copyright JetBrains s.r.o. and Kotlin Programming Language contributors, licensed under the Apache License, Version 2.0.
+- Rust JNI bindings (`jni` crate) and workspace crates: licensed under MIT or Apache-2.0.
 
-GridCraft's original assets and the UI's bundled egui font inputs are listed in ATTRIBUTION.md.
+The per-file asset list (author, source, license) is in ATTRIBUTION.md.
+
+Upstream GridCraft's original assets and the desktop UI's bundled egui font inputs are listed in ATTRIBUTION.md.
 Builds made with craft-fonts (CRAFT_FONTS_DIR) also embed the fonts listed there under the SIL Open
 Font License 1.1.
 

@@ -1,3 +1,4 @@
+// Modified in 2026 for MasuSheet (Android spreadsheet fork of GridCraft).
 //! Sample workbooks built in code (original content), for the start screen, demos, README
 //! screenshots and tests.
 
@@ -8,7 +9,7 @@ use serde_json::json;
 
 use crate::{DocState, Session};
 
-pub const SAMPLES: &[(&str, &str)] = &[("budget", "Household Budget"), ("sales", "Quarterly Sales Dashboard"), ("grades", "Gradebook")];
+pub const SAMPLES: &[(&str, &str)] = &[("budget", "Household Budget"), ("sales", "Quarterly Sales Dashboard"), ("grades", "Gradebook"), ("repair", "修理依頼書.xlsx")];
 
 pub fn title(name: &str) -> String {
     SAMPLES.iter().find(|(n, _)| *n == name).map(|(_, t)| t.to_string()).unwrap_or_else(|| "Sample".into())
@@ -23,6 +24,7 @@ pub fn build(name: &str) -> Option<Workbook> {
             "budget" => "Budget".into(),
             "sales" => "Sales".into(),
             "grades" => "Grades".into(),
+            "repair" => "修理申込票".into(),
             _ => return None,
         };
     }
@@ -31,6 +33,7 @@ pub fn build(name: &str) -> Option<Workbook> {
         "budget" => budget(&mut s),
         "sales" => sales(&mut s),
         "grades" => grades(&mut s),
+        "repair" => repair(&mut s),
         _ => false,
     };
     if !ok {
@@ -210,4 +213,37 @@ fn grades(s: &mut Session) -> bool {
 /// A blank sheet (for callers that need one without a session).
 pub fn blank_sheet(name: &str) -> Sheet {
     Sheet::new(name)
+}
+
+
+fn repair(s: &mut Session) -> bool {
+    let rows = json!([
+        ["修理・点検お申し込み兼チェックシート", null, null, null],
+        ["お申し込み日", "20    年    月    日", "受付番号", "RC-2026-0104"],
+        ["お名前", "山田 太郎 様", "ご購入日", "2026年  10月  31日"],
+        ["メールアドレス", "          @          ", "電話番号", "090 - 1234 - 5678"],
+        ["同梱品チェック（クリックで☑切替）", "□ 本体", "□ ACアダプター", "☑ 保証書"],
+        ["追加付属品", "□ USBケーブル", "□ 元箱・説明書", "□ SDカード"],
+        ["事前確認事項", "☑ バックアップ済み", "□ 初期化同意", "□ 見積連絡希望"],
+        ["症状・ご要望メモ", "電源投入時にファン音が大きい。バッテリー持続時間の点検を希望。", null, null]
+    ]);
+    run(s, "range.setValues", json!({"range": "A1:D8", "values": rows, "parse": false}))
+        && run(s, "home.columnWidth", json!({"cols": "A:A", "width": 210}))
+        && run(s, "home.columnWidth", json!({"cols": "B:B", "width": 210}))
+        && run(s, "home.columnWidth", json!({"cols": "C:C", "width": 160}))
+        && run(s, "home.columnWidth", json!({"cols": "D:D", "width": 180}))
+        && run(s, "home.rowHeight", json!({"rows": "1:1", "height": 34}))
+        && run(s, "home.rowHeight", json!({"rows": "2:8", "height": 28}))
+        && run(s, "home.mergeCenter", json!({"range": "A1:D1"}))
+        && run(s, "home.mergeCells", json!({"range": "B8:D8"}))
+        && run(s, "home.bold", json!({"range": "A1:D1", "on": true}))
+        && run(s, "home.fontSize", json!({"range": "A1:D1", "size": 14}))
+        && run(s, "home.fillColor", json!({"range": "A1:D1", "color": "#163828"}))
+        && run(s, "home.fontColor", json!({"range": "A1:D1", "color": "#FFFFFF"}))
+        && run(s, "home.bold", json!({"range": "A2:A8", "on": true}))
+        && run(s, "home.bold", json!({"range": "C2:C4", "on": true}))
+        && run(s, "home.fillColor", json!({"range": "A2:A8", "color": "#E8F5E9"}))
+        && run(s, "home.fillColor", json!({"range": "C2:C4", "color": "#E8F5E9"}))
+        && run(s, "home.borders", json!({"range": "A1:D8", "preset": "all", "style": "thin", "color": "#94A3B8"}))
+        && run(s, "selection.set", json!({"active": "B2", "range": "B2"}))
 }

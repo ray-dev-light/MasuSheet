@@ -1,10 +1,40 @@
+# Android / Gradle / IDE
+*.iml
+.gradle
+/local.properties
+local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+/.kotlin
+/backups
+/app/build
+
+# Signing keys & secrets (never commit to Git)
+*.jks
+*.keystore
+*.p12
+keystore.properties
+/app/keystore/
+
+# Rust / Cargo / Upstream workspaces
+/target
+/target-*/
+/dist
 *~
 plan/
-/target
-/dist
 /corpus
 /log
-.DS_Store
-/.claude/
-/target-*/
-/craft-fonts/
+
+# Packaged binaries
+*.apk
+*.aab
+/releases/

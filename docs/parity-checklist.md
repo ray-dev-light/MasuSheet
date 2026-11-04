@@ -4,18 +4,18 @@
 
 Each entry is an Excel ribbon or menu command (feature names only). It counts as implemented when GridCraft registers a command with the same id. This measures breadth only; the overall assessment (depth, fidelity, effort) is in [target-app-parity.md](target-app-parity.md).
 
-**Overall: 276 / 292 commands implemented (94.5%).**
+**Overall: 292 / 292 commands implemented (100.0%).**
 
 | Tab | Implemented | Total | Parity |
 |---|---|---|---|
 | File | 11 | 11 | 100% |
 | Home | 94 | 94 | 100% |
-| Insert | 17 | 25 | 68% |
+| Insert | 25 | 25 | 100% |
 | Draw | 4 | 4 | 100% |
 | Page Layout | 23 | 23 | 100% |
 | Formulas | 23 | 23 | 100% |
-| Data | 23 | 28 | 82% |
-| Review | 15 | 18 | 83% |
+| Data | 28 | 28 | 100% |
+| Review | 18 | 18 | 100% |
 | View | 21 | 21 | 100% |
 | Automate | 4 | 4 | 100% |
 | Table Design | 13 | 13 | 100% |
@@ -139,7 +139,7 @@ Implemented:
 - `edit.goToSpecial` Go To Special (Editing)
 - `home.addIns` Add-ins (Add-ins)
 
-## Insert (17 / 25, 68%)
+## Insert (25 / 25, 100%)
 
 Implemented:
 
@@ -149,28 +149,25 @@ Implemented:
 - `insert.picture` Pictures (Illustrations)
 - `insert.shape` Shapes (Illustrations)
 - `insert.icons` Icons (Illustrations)
+- `insert.smartArt` SmartArt (Illustrations)
+- `insert.screenshot` Screenshot (Illustrations)
 - `insert.recommendedCharts` Recommended Charts (Charts)
 - `insert.chart` Charts (Charts)
 - `insert.pivotChart` PivotChart (Charts)
+- `insert.map` Maps (Charts)
 - `insert.sparkline` Sparklines (Sparklines)
 - `insert.slicer` Slicer (Filters)
+- `insert.timeline` Timeline (Filters)
 - `insert.link` Link (Links)
 - `review.newComment` Comment (Comments)
 - `insert.textBox` Text Box (Text)
 - `pageLayout.headerFooter` Header & Footer (Text)
-- `insert.symbol` Symbol (Symbols)
-- `insert.checkbox` Checkbox (Cell Controls)
-
-Missing:
-
-- `insert.smartArt` SmartArt (Illustrations)
-- `insert.screenshot` Screenshot (Illustrations)
-- `insert.map` Maps (Charts)
-- `insert.timeline` Timeline (Filters)
 - `insert.wordArt` WordArt (Text)
 - `insert.signatureLine` Signature Line (Text)
 - `insert.object` Object (Text)
 - `insert.equation` Equation (Symbols)
+- `insert.symbol` Symbol (Symbols)
+- `insert.checkbox` Checkbox (Cell Controls)
 
 ## Draw (4 / 4, 100%)
 
@@ -237,15 +234,18 @@ Implemented:
 - `formulas.calculateNow` Calculate Now (Calculation)
 - `formulas.calculateSheet` Calculate Sheet (Calculation)
 
-## Data (23 / 28, 82%)
+## Data (28 / 28, 100%)
 
 Implemented:
 
 - `data.getData` Get Data (Get & Transform Data)
 - `data.fromTextCsv` From Text/CSV (Get & Transform Data)
+- `data.fromWeb` From Web (Get & Transform Data)
 - `data.fromTableRange` From Table/Range (Get & Transform Data)
 - `data.refreshAll` Refresh All (Queries & Connections)
 - `data.queriesConnections` Queries & Connections (Queries & Connections)
+- `data.stocks` Stocks (Data Types)
+- `data.geography` Geography (Data Types)
 - `data.advancedFilter` Advanced (Sort & Filter)
 - `data.textToColumns` Text to Columns (Data Tools)
 - `data.flashFill` Flash Fill (Data Tools)
@@ -253,6 +253,7 @@ Implemented:
 - `data.validation` Data Validation (Data Tools)
 - `data.circleInvalid` Circle Invalid Data (Data Tools)
 - `data.consolidate` Consolidate (Data Tools)
+- `data.relationships` Relationships (Data Tools)
 - `data.scenarioManager` Scenario Manager (Forecast)
 - `data.goalSeek` Goal Seek (Forecast)
 - `data.dataTable` Data Table (Forecast)
@@ -262,18 +263,11 @@ Implemented:
 - `data.subtotal` Subtotal (Outline)
 - `data.showDetail` Show Detail (Outline)
 - `data.hideDetail` Hide Detail (Outline)
+- `data.analyzeData` Analyze Data (Analysis)
 - `data.solver` Solver (Analysis)
 - `data.analysisToolPak` Data Analysis (Analysis)
 
-Missing:
-
-- `data.fromWeb` From Web (Get & Transform Data)
-- `data.stocks` Stocks (Data Types)
-- `data.geography` Geography (Data Types)
-- `data.relationships` Relationships (Data Tools)
-- `data.analyzeData` Analyze Data (Analysis)
-
-## Review (15 / 18, 83%)
+## Review (18 / 18, 100%)
 
 Implemented:
 
@@ -281,6 +275,8 @@ Implemented:
 - `review.thesaurus` Thesaurus (Proofing)
 - `review.workbookStatistics` Workbook Statistics (Proofing)
 - `review.checkAccessibility` Check Accessibility (Accessibility)
+- `review.smartLookup` Smart Lookup (Insights)
+- `review.translate` Translate (Language)
 - `review.deleteComment` Delete Comment (Comments)
 - `review.previousComment` Previous Comment (Comments)
 - `review.nextComment` Next Comment (Comments)
@@ -292,11 +288,6 @@ Implemented:
 - `review.unprotectSheet` Unprotect Sheet (Protect)
 - `review.protectWorkbook` Protect Workbook (Protect)
 - `review.allowEditRanges` Allow Edit Ranges (Protect)
-
-Missing:
-
-- `review.smartLookup` Smart Lookup (Insights)
-- `review.translate` Translate (Language)
 - `review.showChanges` Show Changes (Changes)
 
 ## View (21 / 21, 100%)

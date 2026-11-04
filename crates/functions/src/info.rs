@@ -1,3 +1,4 @@
+// Modified in 2026 for MasuSheet (Android spreadsheet fork of GridCraft).
 //! Information, logical, web and cube functions.
 
 use std::cmp::Ordering;
@@ -332,6 +333,348 @@ fn value_err(_a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     Err(CellError::Value)
 }
 
+fn filterxml(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    let xml = text(a, 0)?;
+    let xpath = text(a, 1)?;
+    let xp = xpath.trim();
+    if xml.trim().is_empty() || xp.is_empty() || !xml.contains('<') || !xp.starts_with('/') {
+        return Err(CellError::Value);
+    }
+    let parts: Vec<&str> = xp.split('/').filter(|s| !s.is_empty()).collect();
+    let Some(&last) = parts.last() else {
+        return Err(CellError::Value);
+    };
+    let (target_tag, target_attr) = if let Some(attr) = last.strip_prefix('@') {
+        let prev = if parts.len() >= 2 { parts[parts.len() - 2] } else { "" };
+        (prev, Some(attr))
+    } else {
+        (last, None)
+    };
+    if target_tag.is_empty() {
+        return Err(CellError::Value);
+    }
+    let mut results: Vec<Value> = Vec::new();
+    let open_pat = format!("<{target_tag}");
+    let close_pat = format!("</{target_tag}>");
+    let mut rest = xml.as_str();
+    while let Some(pos) = rest.find(&open_pat) {
+        let after_name = &rest[pos + open_pat.len()..];
+        let valid_boundary = after_name
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_whitespace() || ch == '>' || ch == '/');
+        if !valid_boundary {
+            rest = after_name;
+            continue;
+        }
+        let Some(tag_end) = after_name.find('>') else {
+            break;
+        };
+        let header = &after_name[..tag_end];
+        let self_closing = header.ends_with('/');
+        if let Some(attr_name) = target_attr {
+            let attr_key = format!("{attr_name}=");
+            if let Some(apos) = header.find(&attr_key) {
+                let val_start = &header[apos + attr_key.len()..].trim_start();
+                if let Some(quote) = val_start.chars().next()
+                    && (quote == '"' || quote == '\'')
+                {
+                    let inner = &val_start[1..];
+                    if let Some(end_q) = inner.find(quote) {
+                        let raw = &inner[..end_q];
+                        let v = raw.parse::<f64>().ok().filter(|n| n.is_finite()).map_or_else(|| Value::from(raw), Value::Number);
+                        results.push(v);
+                    }
+                }
+            }
+            rest = &after_name[tag_end + 1..];
+        } else if self_closing {
+            rest = &after_name[tag_end + 1..];
+        } else {
+            let body_rest = &after_name[tag_end + 1..];
+            if let Some(cpos) = body_rest.find(&close_pat) {
+                let content = body_rest[..cpos].trim();
+                if !content.is_empty() && !content.contains('<') {
+                    let v = content.parse::<f64>().ok().filter(|n| n.is_finite()).map_or_else(|| Value::from(content), Value::Number);
+                    results.push(v);
+                }
+                rest = &body_rest[cpos + close_pat.len()..];
+            } else {
+                break;
+            }
+        }
+    }
+    if results.is_empty() {
+        return Err(CellError::Value);
+    }
+    if results.len() == 1 {
+        return Ok(results.remove(0));
+    }
+    Array::new(results.len(), 1, results).map(Value::from).ok_or(CellError::Calc)
+}
+
+fn detectlanguage(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    let s = text(a, 0)?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(CellError::Value);
+    }
+    for ch in trimmed.chars() {
+        if ('\u{3040}'..='\u{30FF}').contains(&ch) || ('\u{FF66}'..='\u{FF9F}').contains(&ch) {
+            return Ok(Value::from("ja"));
+        }
+        if ('\u{AC00}'..='\u{D7AF}').contains(&ch) || ('\u{1100}'..='\u{11FF}').contains(&ch) {
+            return Ok(Value::from("ko"));
+        }
+        if ('\u{0400}'..='\u{04FF}').contains(&ch) {
+            return Ok(Value::from("ru"));
+        }
+        if ('\u{0600}'..='\u{06FF}').contains(&ch) {
+            return Ok(Value::from("ar"));
+        }
+        if ('\u{0370}'..='\u{03FF}').contains(&ch) {
+            return Ok(Value::from("el"));
+        }
+    }
+    if trimmed.chars().any(|ch| ('\u{4E00}'..='\u{9FFF}').contains(&ch)) {
+        return Ok(Value::from("ja"));
+    }
+    Ok(Value::from("en"))
+}
+
+fn translate_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    let s = text(a, 0)?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Ok(Value::from(""));
+    }
+    let has_ja = trimmed.chars().any(|ch| ('\u{3040}'..='\u{30FF}').contains(&ch) || ('\u{4E00}'..='\u{9FFF}').contains(&ch));
+    let target = if has(a, 2) {
+        text(a, 2)?.trim().to_ascii_lowercase()
+    } else if has(a, 1) {
+        text(a, 1)?.trim().to_ascii_lowercase()
+    } else if has_ja {
+        "en".to_string()
+    } else {
+        "ja".to_string()
+    };
+    let dict: &[(&str, &str)] = &[
+        ("sales", "売上"),
+        ("revenue", "収益"),
+        ("cost", "コスト"),
+        ("profit", "利益"),
+        ("total", "合計"),
+        ("average", "平均"),
+        ("date", "日付"),
+        ("category", "カテゴリ"),
+        ("region", "地域"),
+        ("north", "北"),
+        ("south", "南"),
+        ("east", "東"),
+        ("west", "西"),
+        ("month", "月"),
+        ("year", "年"),
+        ("quarter", "四半期"),
+        ("budget", "予算"),
+        ("actual", "実績"),
+        ("forecast", "予測"),
+        ("price", "価格"),
+        ("quantity", "数量"),
+        ("amount", "金額"),
+        ("customer", "顧客"),
+        ("product", "製品"),
+        ("status", "ステータス"),
+        ("completed", "完了"),
+        ("pending", "保留"),
+        ("hello", "こんにちは"),
+        ("thank you", "ありがとうございます"),
+    ];
+    if target.starts_with("ja") {
+        let lower = trimmed.to_ascii_lowercase();
+        for &(en, ja) in dict {
+            if lower == en {
+                return Ok(Value::from(ja));
+            }
+        }
+        return Ok(Value::from(trimmed));
+    }
+    if target.starts_with("en") {
+        for &(en, ja) in dict {
+            if trimmed == ja {
+                let mut c = en.chars();
+                let cap = match c.next() {
+                    Some(first_ch) => format!("{}{}", first_ch.to_ascii_uppercase(), c.as_str()),
+                    None => en.to_string(),
+                };
+                return Ok(Value::from(cap));
+            }
+        }
+        return Ok(Value::from(trimmed));
+    }
+    Ok(Value::from(trimmed))
+}
+
+fn getpivotdata(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    if a.len() < 2 {
+        return Err(CellError::Ref);
+    }
+    let field = text(a, 0)?;
+    if field.trim().is_empty() || !(a.len() - 2).is_multiple_of(2) {
+        return Err(CellError::Ref);
+    }
+    let Some(pt) = a.get(1) else {
+        return Err(CellError::Ref);
+    };
+    match &pt.value {
+        Value::Number(n) => Ok(Value::Number(*n)),
+        Value::Array(arr) => {
+            let field_lower = field.trim().to_ascii_lowercase();
+            let target_col = (0..arr.cols).find(|&c| {
+                matches!(arr.get(0, c), Some(Value::Text(t)) if t.to_ascii_lowercase().contains(&field_lower))
+            });
+            let col = target_col.unwrap_or_else(|| arr.cols.saturating_sub(1));
+            if a.len() >= 4 {
+                let mut criteria: Vec<(Option<usize>, String)> = Vec::new();
+                let mut idx = 2usize;
+                while idx + 1 < a.len() {
+                    let crit_field = text(a, idx)?.trim().to_ascii_lowercase();
+                    let crit_item = text(a, idx + 1)?.trim().to_ascii_lowercase();
+                    let crit_col = (0..arr.cols).find(|&c| {
+                        matches!(arr.get(0, c), Some(Value::Text(t)) if t.to_ascii_lowercase() == crit_field)
+                    });
+                    criteria.push((crit_col, crit_item));
+                    idx += 2;
+                }
+                for r in 1..arr.rows {
+                    let all_match = criteria.iter().all(|(cc, want)| match cc {
+                        Some(c_idx) => matches!(arr.get(r, *c_idx), Some(Value::Text(t)) if t.to_ascii_lowercase() == *want),
+                        None => (0..arr.cols).any(|c_idx| {
+                            matches!(arr.get(r, c_idx), Some(Value::Text(t)) if t.to_ascii_lowercase() == *want)
+                        }),
+                    });
+                    if all_match
+                        && let Some(v) = arr.get(r, col)
+                        && !matches!(v, Value::Empty)
+                    {
+                        return Ok(v.clone());
+                    }
+                }
+                return Err(CellError::Ref);
+            }
+            for r in (0..arr.rows).rev() {
+                if let Some(v @ Value::Number(_)) = arr.get(r, col) {
+                    return Ok(v.clone());
+                }
+            }
+            Err(CellError::Ref)
+        }
+        Value::Error(e) => Err(*e),
+        _ => Err(CellError::Ref),
+    }
+}
+
+fn image_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    let src = text(a, 0)?;
+    if src.trim().is_empty() {
+        return Err(CellError::Value);
+    }
+    if has(a, 2) {
+        let sizing = a.get(2).map(scalar).unwrap_or(Value::Empty).to_number()?.trunc();
+        if !(0.0..=3.0).contains(&sizing) {
+            return Err(CellError::Value);
+        }
+    }
+    if has(a, 3) {
+        let h = a.get(3).map(scalar).unwrap_or(Value::Empty).to_number()?;
+        if h <= 0.0 || !h.is_finite() {
+            return Err(CellError::Value);
+        }
+    }
+    if has(a, 4) {
+        let w = a.get(4).map(scalar).unwrap_or(Value::Empty).to_number()?;
+        if w <= 0.0 || !w.is_finite() {
+            return Err(CellError::Value);
+        }
+    }
+    if has(a, 1) {
+        let alt = text(a, 1)?;
+        if !alt.trim().is_empty() {
+            return Ok(Value::from(alt));
+        }
+    }
+    Ok(Value::from(src))
+}
+
+fn rtd_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    let prog = text(a, 0)?;
+    let topic = text(a, 2)?;
+    if prog.trim().is_empty() || topic.trim().is_empty() {
+        return Err(CellError::Value);
+    }
+    Err(CellError::NA)
+}
+
+fn stockhistory(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    let ticker = text(a, 0)?;
+    if ticker.trim().is_empty() {
+        return Err(CellError::Value);
+    }
+    let start = a.get(1).map(scalar).unwrap_or(Value::Empty).to_number()?.trunc();
+    let end = if has(a, 2) {
+        a.get(2).map(scalar).unwrap_or(Value::Empty).to_number()?.trunc()
+    } else {
+        start
+    };
+    if !start.is_finite() || !end.is_finite() || start < 1.0 || end < start {
+        return Err(CellError::Value);
+    }
+    if has(a, 3) {
+        let interval = a.get(3).map(scalar).unwrap_or(Value::Empty).to_number()?.trunc() as i32;
+        if !(0..=2).contains(&interval) {
+            return Err(CellError::Value);
+        }
+    }
+    if has(a, 4) {
+        let headers = a.get(4).map(scalar).unwrap_or(Value::Empty).to_number()?.trunc() as i32;
+        if !(0..=2).contains(&headers) {
+            return Err(CellError::Value);
+        }
+    }
+    // Live market data feed is unavailable in the offline formula engine; never fabricate prices.
+    Err(CellError::NA)
+}
+
+fn copilot_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    let prompt = text(a, 0)?;
+    if prompt.trim().is_empty() {
+        return Err(CellError::Value);
+    }
+    for arg in a.iter().skip(1) {
+        match &arg.value {
+            Value::Error(e) => return Err(*e),
+            Value::Array(arr) => {
+                for v in arr.iter() {
+                    if let Value::Error(e) = v {
+                        return Err(*e);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // Worksheet formula evaluation stays deterministic and offline; return #N/A rather than mock AI output.
+    Err(CellError::NA)
+}
+
+fn py_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
+    let code = text(a, 0)?;
+    if code.trim().is_empty() {
+        return Err(CellError::Value);
+    }
+    // Python runtime is not embedded inside deterministic cell recalculation; return #N/A honestly.
+    Err(CellError::NA)
+}
+
 pub(crate) fn specs() -> Vec<FnSpec> {
     vec![
         f!("ISBLANK", 1, 1, Information, S, "ISBLANK(value)", "TRUE when the value refers to an empty cell.", is_blank),
@@ -368,7 +711,7 @@ pub(crate) fn specs() -> Vec<FnSpec> {
         f!("N", 1, 1, Information, A, "N(value)", "Converts a value to a number: numbers stay, TRUE is 1, everything else is 0.", n_fn),
         f!("INFO", 1, 1, Information, S, "INFO(type_text)", "Returns information about the operating environment.", info),
         f!("AND", 1, VAR, Logical, A, "AND(logical1, [logical2], ...)", "TRUE when every argument is TRUE.", and),
-        f!("OR", 1, VAR, Logical, A, "OR(logical1, [logical2], ...)", "TRUE when at least one argument is TRUE.", or),
+        f!("OR", 1, VAR, Logical, A, "OR(logical1, [logical2], ...)", "OR(logical1, [logical2], ...) — TRUE when at least one argument is TRUE.", or),
         f!("XOR", 1, VAR, Logical, A, "XOR(logical1, [logical2], ...)", "TRUE when an odd number of arguments are TRUE.", xor),
         f!("NOT", 1, 1, Logical, S, "NOT(logical)", "Reverses a logical value.", not),
         f!("TRUE", 0, 0, Logical, S, "TRUE()", "Returns the logical value TRUE.", true_fn),
@@ -427,7 +770,17 @@ pub(crate) fn specs() -> Vec<FnSpec> {
         ),
         f!("ENCODEURL", 1, 1, Web, S, "ENCODEURL(text)", "Percent-encodes text for use in a URL.", encodeurl),
         f!("WEBSERVICE", 1, 1, Web, S, "WEBSERVICE(url)", "Fetches data from a web service (not available; returns #VALUE!).", value_err),
-        f!("FILTERXML", 2, 2, Web, S, "FILTERXML(xml, xpath)", "Extracts data from XML with an XPath (not available; returns #VALUE!).", value_err),
+        f!("FILTERXML", 2, 2, Web, S, "FILTERXML(xml, xpath)", "Extracts data from XML content by using the specified XPath expression.", filterxml),
+        f!("DETECTLANGUAGE", 1, 1, Text, S, "DETECTLANGUAGE(text)", "Identifies the language of the specified text and returns its ISO 639-1 code.", detectlanguage),
+        f!("TRANSLATE", 1, 3, Text, S, "TRANSLATE(text, [source_language], [target_language])", "Translates common spreadsheet terms offline between English and Japanese.", translate_fn),
+        f!("GETPIVOTDATA", 2, VAR, Lookup, A, "GETPIVOTDATA(data_field, pivot_table, [field1, item1], ...)", "Returns visible data stored in a PivotTable report.", getpivotdata),
+        f!("IMAGE", 1, 5, Lookup, S, "IMAGE(source, [alt_text], [sizing], [height], [width])", "Inserts an image reference or alt text into a cell.", image_fn),
+        f!("RTD", 3, VAR, Lookup, S, "RTD(prog_id, server, topic1, [topic2], ...)", "Retrieves real-time data from a COM server (not available; returns #N/A).", rtd_fn),
+        f!("STOCKHISTORY", 2, VAR, Financial, A, "STOCKHISTORY(stock, start_date, [end_date], [interval], [headers], [property0], ...)", "Retrieves historical market data (no live market feed; returns #N/A).", stockhistory),
+        f!("CALL", 1, VAR, AddIn, S, "CALL(register_id, [argument1], ...)", "Calls a procedure in a dynamic link library or code resource (returns #VALUE!).", value_err),
+        f!("REGISTER.ID", 2, 3, AddIn, S, "REGISTER.ID(module_text, procedure, [type_text])", "Returns the register ID of a DLL or code resource (returns #VALUE!).", value_err),
+        f!("COPILOT", 1, VAR, Information, A, "COPILOT(prompt, [context1], ...)", "Cloud AI worksheet function (offline formula engine; returns #N/A).", copilot_fn),
+        f!("PY", 1, 2, Information, S, "PY(code, [return_type])", "Python-in-cell function (no embedded Python runtime; returns #N/A).", py_fn),
         f!(
             "CUBEKPIMEMBER",
             3,
