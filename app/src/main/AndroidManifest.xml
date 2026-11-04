@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- [EN] Minimal permission footprint: INTERNET only (for user-triggered AI provider calls). -->
+    <!-- [JA] 最小権限構成: ユーザーが明示実行する AI 編集通信のための INTERNET 権限のみを宣言します。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MasuSheet"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.ms-excel.sheet.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-excel.sheet.binary.macroenabled.12" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="text/tab-separated-values" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+
+        <activity
+            android:name=".SecondaryWorkbookActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|uiMode"
+            android:documentLaunchMode="always"
+            android:exported="false"
+            android:label="@string/secondary_window_label"
+            android:launchMode="standard"
+            android:process=":window2"
+            android:resizeableActivity="true"
+            android:taskAffinity=""
+            android:windowSoftInputMode="adjustResize" />
+
+        <provider
+            android:name=".storage.MasuSheetClipboardImageProvider"
+            android:authorities="${applicationId}.clipboard"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+
+</manifest>

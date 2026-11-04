@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer rounded workbook card -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M28,24h52c2.2,0 4,1.8 4,4v52c0,2.2 -1.8,4 -4,4H28c-2.2,0 -4,-1.8 -4,-4V28C24,25.8 25.8,24 28,24z" />
+    <!-- Header ribbon bar -->
+    <path
+        android:fillColor="#FF1F9D55"
+        android:pathData="M28,24h52c2.2,0 4,1.8 4,4v10H24V28C24,25.8 25.8,24 28,24z" />
+    <!-- Spreadsheet cells Row 1 -->
+    <path
+        android:fillColor="#FFD8F3E5"
+        android:pathData="M29,43h14v9h-14z" />
+    <path
+        android:fillColor="#FFEBF5EE"
+        android:pathData="M47,43h14v9h-14z" />
+    <path
+        android:fillColor="#FFEBF5EE"
+        android:pathData="M65,43h14v9h-14z" />
+    <!-- Spreadsheet cells Row 2 -->
+    <path
+        android:fillColor="#FFD8F3E5"
+        android:pathData="M29,56h14v9h-14z" />
+    <path
+        android:fillColor="#FF1F9D55"
+        android:pathData="M47,56h14v9h-14z" />
+    <path
+        android:fillColor="#FFEBF5EE"
+        android:pathData="M65,56h14v9h-14z" />
+    <!-- Spreadsheet cells Row 3 + Gold highlight chart bar -->
+    <path
+        android:fillColor="#FFD8F3E5"
+        android:pathData="M29,69h14v9h-14z" />
+    <path
+        android:fillColor="#FFEBF5EE"
+        android:pathData="M47,69h14v9h-14z" />
+    <path
+        android:fillColor="#FFF59E0B"
+        android:pathData="M65,69h14v9h-14z" />
+</vector>

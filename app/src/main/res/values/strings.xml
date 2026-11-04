@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MasuSheet</string>
+    <string name="secondary_window_label">MasuSheet (Secondary Window)</string>
+    <string name="shortcut_new_window_short">New Window</string>
+    <string name="shortcut_new_window_long">Open in a New Window</string>
+    <string name="shortcut_new_blank_short">New Blank Book</string>
+    <string name="shortcut_new_blank_long">Open a New Blank Workbook Window</string>
+</resources>

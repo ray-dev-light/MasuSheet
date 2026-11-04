@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MasuSheet</string>
+    <string name="secondary_window_label">MasuSheet（別ウィンドウ）</string>
+    <string name="shortcut_new_window_short">新しいウィンドウ</string>
+    <string name="shortcut_new_window_long">新しいウィンドウで開く</string>
+    <string name="shortcut_new_blank_short">新規空白ブック</string>
+    <string name="shortcut_new_blank_long">新規空白ブックを別ウィンドウで開く</string>
+</resources>
