@@ -1,147 +1,52 @@
-package com.masusheet.app
+package com.masusheet.app.ui.ribbon
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.RectF
-import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
-import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.text.Editable
-import android.text.InputType
-import android.text.Spannable
-import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
-import android.util.TypedValue
-import android.view.GestureDetector
-import android.view.Gravity
-import android.view.KeyEvent
-import android.view.MotionEvent
-import android.view.PointerIcon
-import android.view.VelocityTracker
-import android.view.View
-import android.view.ViewConfiguration
-import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputConnectionWrapper
-import android.view.inputmethod.InputContentInfo
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
-import android.widget.LinearLayout
-import android.widget.OverScroller
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContract
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerHoverIcon
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.hypot
+import com.masusheet.app.core.SpreadsheetI18n
+import com.masusheet.app.ui.LocalAppLanguage
+import com.masusheet.app.ui.LocalDarkTheme
+import com.masusheet.app.ui.LocalMaterial3Ui
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /**
  * ============================================================================
@@ -155,8 +60,8 @@ import kotlin.math.sin
  */
 
 /**
- * [EN] UI/application helper `MasuSheetPillButton` (masu sheet pill button).
- * [JA] `MasuSheetPillButton` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Compact quick-access pill button supporting primary tap, optional long-press, highlight state, and UI test tag.
+ * [JA] クイックアクセスバー等で使用するピル型ボタンです。タップ・長押し・アクティブ強調表示・テストタグに対応します。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -259,8 +164,8 @@ fun MasuSheetPillButton(
 }
 
 /**
- * [EN] UI/application helper `SpreadsheetDropdownActionItem` (spreadsheet dropdown action item).
- * [JA] `SpreadsheetDropdownActionItem` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Menu entry model for ribbon dropdown popups, representing an executable item, section header, horizontal divider, or nested submenu.
+ * [JA] リボンのドロップダウンメニュー内の1項目（実行アクション、見出し、区切り線、またはサブメニュー）を表すデータモデルです。
  */
 data class SpreadsheetDropdownActionItem(
     val label: String,
@@ -271,8 +176,8 @@ data class SpreadsheetDropdownActionItem(
 )
 
 /**
- * [EN] UI/application helper `SpreadsheetRibbonDropdownPopup` (spreadsheet ribbon dropdown popup).
- * [JA] `SpreadsheetRibbonDropdownPopup` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Themed `DropdownMenu` popup rendering `SpreadsheetDropdownActionItem` entries with headers, dividers, and expandable submenus.
+ * [JA] 見出し・区切り線・階層サブメニューを備えたリボン共通のドロップダウンポップアップを描画します。
  */
 @Composable
 fun SpreadsheetRibbonDropdownPopup(
@@ -391,8 +296,8 @@ fun SpreadsheetRibbonDropdownPopup(
 }
 
 /**
- * [EN] UI/application helper `SpreadsheetRibbonGroup` (spreadsheet ribbon group).
- * [JA] `SpreadsheetRibbonGroup` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Vertical ribbon command group container displaying controls above a centered group caption (localized automatically via `SpreadsheetI18n`).
+ * [JA] 複数のリボンボタンを束ね、下部にグループ名ラベル（日英自動翻訳対応）を表示するリボンセクション枠です。
  */
 @Composable
 fun SpreadsheetRibbonGroup(
@@ -427,8 +332,8 @@ fun SpreadsheetRibbonGroup(
 }
 
 /**
- * [EN] UI/application helper `SpreadsheetRibbonGroupDivider` (spreadsheet ribbon group divider).
- * [JA] `SpreadsheetRibbonGroupDivider` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Subtle vertical separator line placed between adjacent `SpreadsheetRibbonGroup` sections.
+ * [JA] 隣接するリボングループ間を視覚的に区切る縦方向のセパレータ線です。
  */
 @Composable
 fun SpreadsheetRibbonGroupDivider() {
@@ -451,8 +356,8 @@ fun SpreadsheetRibbonGroupDivider() {
 }
 
 /**
- * [EN] UI/application helper `stripLeadingIconWhenSeparateIconShown` (strip leading icon when separate icon shown).
- * [JA] `stripLeadingIconWhenSeparateIconShown` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Removes a duplicate leading emoji/symbol token from `label` when `icon` is already rendered in its own slot.
+ * [JA] ボタンに独立アイコン `icon` が表示される場合、`label` 先頭に重複している絵文字・記号トークンを除去して整形します。
  */
 internal fun stripLeadingIconWhenSeparateIconShown(label: String, icon: String): String {
     if (icon.isEmpty()) return label
@@ -472,8 +377,8 @@ internal fun stripLeadingIconWhenSeparateIconShown(label: String, icon: String):
 }
 
 /**
- * [EN] UI/application helper `SpreadsheetTallRibbonButton` (spreadsheet tall ribbon button).
- * [JA] `SpreadsheetTallRibbonButton` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Full-height 2-row ribbon button showing a large top icon, localized caption, and optional dropdown chevron (`▾`).
+ * [JA] 上段に大きなアイコン、下段に2行対応ラベルと任意のドロップダウン矢印（`▾`）を配置する縦長リボンボタンです。
  */
 @Composable
 fun SpreadsheetTallRibbonButton(
@@ -552,8 +457,8 @@ fun SpreadsheetTallRibbonButton(
 }
 
 /**
- * [EN] UI/application helper `SpreadsheetSmallIconBtn` (spreadsheet small icon btn).
- * [JA] `SpreadsheetSmallIconBtn` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Compact square formatting icon button (e.g. Bold `B`, Italic `I`, Underline `U`, borders, alignment) with optional color bar indicator.
+ * [JA] 太字 `B`・斜体 `I`・下線 `U`・罫線・文字揃え・色バー表示などに用いるコンパクトな正方形ツールボタンです。
  */
 @Composable
 fun SpreadsheetSmallIconBtn(
@@ -655,8 +560,8 @@ fun SpreadsheetSmallIconBtn(
 }
 
 /**
- * [EN] UI/application helper `SpreadsheetDropdownBox` (spreadsheet dropdown box).
- * [JA] `SpreadsheetDropdownBox` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Combo-box style selector (used for font family, font size, and number format presets) displaying the current value and a `▾` arrow.
+ * [JA] フォント名・フォントサイズ・表示形式プリセットなどの現在値を枠内に表示し、クリックで候補を開くコンボボックス型コントロールです。
  */
 @Composable
 fun SpreadsheetDropdownBox(
@@ -721,8 +626,8 @@ fun SpreadsheetDropdownBox(
 }
 
 /**
- * [EN] UI/application helper `SpreadsheetCompactRowButton` (spreadsheet compact row button).
- * [JA] `SpreadsheetCompactRowButton` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Single-line horizontal ribbon button pairing a leading icon with a localized label for stacked 2- or 3-row ribbon groups.
+ * [JA] リボングループ内に2〜3段積みで配置する、アイコン＋1行ラベルの横長コンパクトボタンです。
  */
 @Composable
 fun SpreadsheetCompactRowButton(
@@ -791,8 +696,8 @@ fun SpreadsheetCompactRowButton(
 }
 
 /**
- * [EN] UI/application helper `SpreadsheetRibbonCheckbox` (spreadsheet ribbon checkbox).
- * [JA] `SpreadsheetRibbonCheckbox` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Compact toggleable `[✓]` / `[ ]` checkbox control for ribbon options (such as Gridlines, Formula Bar, Headings, and Banded Rows).
+ * [JA] 目盛線・数式バー・見出し・縞模様などのON/OFFを切り替えるリボン用のチェックボックスコントロールです。
  */
 @Composable
 fun SpreadsheetRibbonCheckbox(

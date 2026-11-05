@@ -1,13 +1,35 @@
+# Copyright 2026 MasuSheet contributors. Dual-licensed under MIT OR Apache-2.0.
+# [EN] Android JNI bridge crate connecting MasuSheet's Kotlin UI/Canvas layer to the Rust engine.
+# [JA] MasuSheet の Kotlin UI・Canvas 層と Rust 計算エンジンを接続する Android JNI ブリッジクレートです。
 [package]
 name = "masusheet-jni"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Android JNI bridge for MasuSheet native spreadsheet engine"
 
 [lib]
 name = "masusheet_jni"
 crate-type = ["cdylib"]
+
+# [EN] Match all strict workspace Rust & Clippy lints (`unsafe_code` is denied crate-wide and
+#      allowed exclusively on the 8 `#[unsafe(no_mangle)] extern "system"` JNI export symbols).
+# [JA] ワークスペース共通の厳格な Clippy・安全性リントを適用します（`unsafe_code` はクレート全体で禁止し、
+#      8個の JNI エクスポート関数宣言のみ局所的に許可します）。
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
+
+[lints.clippy]
+cognitive_complexity = "deny"
+too_many_arguments = "deny"
+wildcard_imports = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "warn"
+todo = "warn"
 
 [dependencies]
 gridcraft-core = { workspace = true }

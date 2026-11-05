@@ -310,7 +310,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             new_cell_style
         ),
-        cmd!(query "home.addIns", "Add-ins", ["Home", "Add-ins"], None, "{} → GridCraft extends through MCP and scripts instead of add-ins", always, |_, _| Ok(json!({"addIns": [], "hint": "Use gridcraft-cli mcp or Automate › scripts"}))),
+        cmd!(query "home.addIns", "Add-ins", ["Home", "Add-ins"], None, "{} → automation extends through scripts and Macro Studio instead of COM add-ins", always, |_, _| Ok(json!({"addIns": [], "hint": "Use Automate › Macro Studio or AI Assistant"}))),
         cmd!(query "formulas.recentlyUsed", "Recently Used", ["Formulas", "Function Library"], None, "{} → recently used functions in this workbook", has_doc, recently_used),
         cmd!(query "formulas.financial", "Financial", ["Formulas", "Function Library"], None, "{}", always, |s, _| s.execute("formulas.functions", json!({"category": "Financial"}))),
         cmd!(query "formulas.logical", "Logical", ["Formulas", "Function Library"], None, "{}", always, |s, _| s.execute("formulas.functions", json!({"category": "Logical"}))),
@@ -508,11 +508,16 @@ fn stash_set(wb: &mut Workbook, key: &str, v: &Json) {
 /// Number format that marks checkbox cells (TRUE/FALSE values drawn as boxes).
 pub const CHECKBOX_FORMAT: &str = "\"☐\";\"☐\";\"☐\";[=1]\"☑\"";
 
-/// Copy of the params that is always a JSON object, so keys can be assigned; any other JSON value counts as no params (like null).
+/// [EN] Clones `p` if it is a JSON object, or returns an empty JSON object so callers can safely
+///      populate default command parameters.
+/// [JA] 引数 `p` が JSON オブジェクトであれば複製し、それ以外（`null` 等）の場合は空の JSON オブジェクトを返します。
 fn object_params(p: &Json) -> Json {
     Json::Object(p.as_object().cloned().unwrap_or_default())
 }
 
+/// [EN] Inserts a structured diagram shape (`process`, `hierarchy`, `cycle`, `list`, `matrix`) by
+///      delegating to `insert.shape` with pre-populated layout text and accent styling.
+/// [JA] 指定されたレイアウト（工程・階層・循環・リスト・マトリックス）の図解シェイプを既定スタイル付きで挿入します。
 fn insert_smart_art(s: &mut Session, p: &Json) -> Result<Json> {
     let layout = str_param(p, "layout").unwrap_or("process");
     let default_text = match layout {
@@ -542,11 +547,14 @@ fn insert_smart_art(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.shape", m)
 }
 
+/// [EN] Inserts an image from caller-supplied `base64`/`path`, or falls back to a minimal 1×1
+///      transparent PNG placeholder when invoked headlessly without external image bytes.
+/// [JA] `base64` または `path` 指定の画像を挿入し、未指定時は最小の 1×1 透過 PNG プレースホルダを挿入します。
 fn insert_screenshot(s: &mut Session, p: &Json) -> Result<Json> {
     if p.get("base64").is_some() || p.get("path").is_some() {
         return s.execute("insert.picture", p.clone());
     }
-    // 1x1 light blue PNG base64 when invoked without external image
+    // Minimal 1x1 transparent PNG placeholder when invoked without external image bytes
     let mut m = object_params(p);
     m["base64"] = json!("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
     m["mime"] = json!("image/png");
@@ -556,6 +564,8 @@ fn insert_screenshot(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.picture", m)
 }
 
+/// [EN] Inserts a geographic/hierarchical chart (defaulting to `treemap` when no subtype is given).
+/// [JA] 地図／階層比較用グラフ（未指定時はツリーマップ）をシートへ挿入します。
 fn insert_map_chart(s: &mut Session, p: &Json) -> Result<Json> {
     let mut m = object_params(p);
     if m.get("type").is_none() {
@@ -567,6 +577,9 @@ fn insert_map_chart(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.chart", m)
 }
 
+/// [EN] Converts an evaluated cell [`Value`] into plain display text without scientific notation
+///      for integer-valued numbers below $10^{15}$.
+/// [JA] セルの評価値 [`Value`] を人間が読みやすいプレーン文字列へ変換します。
 fn value_text(v: &Value) -> String {
     match v {
         Value::Empty => String::new(),
@@ -584,10 +597,15 @@ fn value_text(v: &Value) -> String {
     }
 }
 
+/// [EN] Reads the plain display text of cell `c` on `sh`.
+/// [JA] 指定シート上のセル `c` の評価済み文字列を取得します。
 fn cell_text(sh: &Sheet, c: CellRef) -> String {
     value_text(&sh.value(c))
 }
 
+/// [EN] Inserts a date/column filter slicer (`insert.slicer`), inferring the first table column
+///      or region header when `column` is omitted.
+/// [JA] タイムライン／列フィルタ用スライサーを挿入します（`column` 未指定時はテーブル先頭列を自動推定）。
 fn insert_timeline(s: &mut Session, p: &Json) -> Result<Json> {
     if p.get("column").is_some() {
         return s.execute("insert.slicer", p.clone());
@@ -609,11 +627,13 @@ fn insert_timeline(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.slicer", m)
 }
 
+/// [EN] Inserts a decorative styled text box (`textBox` shape with accent fill and border).
+/// [JA] 装飾付きテキストボックス（見出しアート用シェイプ）を挿入します。
 fn insert_word_art(s: &mut Session, p: &Json) -> Result<Json> {
     let mut m = object_params(p);
     m["kind"] = json!("textBox");
     if m.get("text").is_none() {
-        m["text"] = json!("WordArt");
+        m["text"] = json!("Text Art");
     }
     if m.get("width").is_none() {
         m["width"] = json!(220.0);
@@ -630,6 +650,8 @@ fn insert_word_art(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.shape", m)
 }
 
+/// [EN] Inserts a formatted signature line box displaying the signer's name and optional title.
+/// [JA] 署名欄（署名者名および任意の役職付きテキストボックス）をシートへ挿入します。
 fn insert_signature_line(s: &mut Session, p: &Json) -> Result<Json> {
     let signer = str_param(p, "signer").unwrap_or("Authorized Signer");
     let title = str_param(p, "title").unwrap_or("");
@@ -650,6 +672,8 @@ fn insert_signature_line(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.shape", m)
 }
 
+/// [EN] Inserts a visual placeholder card representing an embedded document or object attachment.
+/// [JA] 埋め込みドキュメント／オブジェクトを表す視覚カードシェイプを挿入します。
 fn insert_embedded_object(s: &mut Session, p: &Json) -> Result<Json> {
     let obj_type = str_param(p, "type").unwrap_or("Embedded Document");
     let title = str_param(p, "title").or_else(|| str_param(p, "text")).unwrap_or(obj_type);
@@ -665,6 +689,9 @@ fn insert_embedded_object(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.shape", m)
 }
 
+/// [EN] Inserts a mathematical equation string into the active cell (or as a floating text box
+///      when `asShape: true`).
+/// [JA] 数式記号テキストをアクティブセル（または `asShape: true` の場合はテキストボックス）に挿入します。
 fn insert_equation(s: &mut Session, p: &Json) -> Result<Json> {
     let eq = str_param(p, "equation").or_else(|| str_param(p, "text")).unwrap_or("f(x) = a₀ + ∑(aₙ cos(nx) + bₙ sin(nx))");
     if bool_param(p, "asShape").unwrap_or(false) {
@@ -676,6 +703,10 @@ fn insert_equation(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.symbol", json!({"char": eq}))
 }
 
+/// [EN] Imports caller-provided CSV `text` or local `path`, rejecting live network fetches so the
+///      calculation engine remains 100% deterministic and offline-safe (no SSRF surface).
+/// [JA] 呼び出し側から渡された CSV `text` またはローカル `path` を取り込みます。SSRF 防止と決定論性維持のため、
+///      エンジン内部からの直接ネットワーク通信は明示的に拒否します。
 fn from_web(s: &mut Session, p: &Json) -> Result<Json> {
     if p.get("text").is_some() || p.get("path").is_some() {
         return from_csv(s, p);
@@ -686,6 +717,8 @@ fn from_web(s: &mut Session, p: &Json) -> Result<Json> {
     ))
 }
 
+/// [EN] Extracts a clean ticker symbol from raw cell text or previously formatted `🏛 Name (EXCH:TICKER)` labels.
+/// [JA] セル文字列または変換済みの `🏛 企業名 (取引所:銘柄コード)` 表記から銘柄コードを抽出します。
 fn canonical_ticker(raw: &str) -> &str {
     let stripped = raw.trim().trim_start_matches("🏛 ").trim();
     if let Some((_, inside)) = stripped.rsplit_once(':')
@@ -696,6 +729,10 @@ fn canonical_ticker(raw: &str) -> &str {
     stripped
 }
 
+/// [EN] Formats ticker cells in the target range as stock entities (`🏛 ...`) and writes `#N/A`
+///      into adjacent price/change columns rather than fabricating offline market quotes.
+/// [JA] 選択範囲の銘柄コードを株式データ表記（`🏛 ...`）に整え、オフライン環境で架空の株価を作らないよう
+///      隣接列には正直に `#N/A` を設定します。
 fn data_stocks(s: &mut Session, p: &Json) -> Result<Json> {
     let r = target_range(s, p)?;
     let expand = bool_param(p, "expand").unwrap_or(true);
@@ -754,6 +791,10 @@ fn data_stocks(s: &mut Session, p: &Json) -> Result<Json> {
     })
 }
 
+/// [EN] Tags geographic names in the target range (`🌐 ...`) and populates static reference
+///      population/capital figures for known regions (`#N/A` for unknown offline entries).
+/// [JA] 選択範囲の地名を地理データ表記（`🌐 ...`）に変換し、既知の国・都市については人口と首都／中心地を、
+///      未知の項目には `#N/A` を設定します。
 fn data_geography(s: &mut Session, p: &Json) -> Result<Json> {
     let r = target_range(s, p)?;
     let expand = bool_param(p, "expand").unwrap_or(true);
@@ -813,6 +854,8 @@ fn data_geography(s: &mut Session, p: &Json) -> Result<Json> {
     })
 }
 
+/// [EN] Adds or removes foreign-key table relationships stored in workbook metadata (`REL_NAME`).
+/// [JA] ワークブックのメタデータ領域（`REL_NAME`）にテーブル間のリレーションシップ定義を追加・削除します。
 fn data_relationships(s: &mut Session, p: &Json) -> Result<Json> {
     edit(s, |cx| {
         let mut rels = stash_get(&cx.wb, REL_NAME)
@@ -845,6 +888,9 @@ fn data_relationships(s: &mut Session, p: &Json) -> Result<Json> {
     })
 }
 
+/// [EN] Computes summary statistics (`count`, `sum`, `average`, `min`, `max`, text cell count)
+///      over the target range or current contiguous region, including dynamic-array spill values.
+/// [JA] 指定範囲または現在のデータ領域（スピル結果を含む）の件数・合計・平均・最小・最大を集計して返します。
 fn analyze_data(s: &mut Session, p: &Json) -> Result<Json> {
     let d = s.doc()?;
     let sh = d.wb.active().ok_or(EngineError::NoDocument)?;
@@ -893,6 +939,8 @@ fn analyze_data(s: &mut Session, p: &Json) -> Result<Json> {
     }))
 }
 
+/// [EN] Counts case-insensitive occurrences of the active cell's text (or `query`) on the active sheet.
+/// [JA] アクティブセル文字列（または `query`）が現在のシート内に何件出現するかを大文字小文字を区別せず検索します。
 fn smart_lookup(s: &mut Session, p: &Json) -> Result<Json> {
     let d = s.doc()?;
     let sh = d.wb.active().ok_or(EngineError::NoDocument)?;
@@ -902,9 +950,9 @@ fn smart_lookup(s: &mut Session, p: &Json) -> Result<Json> {
         .unwrap_or_else(|| cell_text(sh, cell));
     let mut hits = 0usize;
     if !term.is_empty() {
-        let lower = term.to_ascii_lowercase();
+        let lower = term.to_lowercase();
         for (_, c_data) in sh.cells.iter() {
-            if value_text(&c_data.value).to_ascii_lowercase().contains(&lower) {
+            if value_text(&c_data.value).to_lowercase().contains(&lower) {
                 hits += 1;
             }
         }
@@ -917,6 +965,8 @@ fn smart_lookup(s: &mut Session, p: &Json) -> Result<Json> {
     }))
 }
 
+/// [EN] Translates common spreadsheet headers and status terms offline between English and Japanese.
+/// [JA] 代表的な表計算の見出し語・ステータス語をオフライン辞書で日英相互翻訳します。
 fn translate_offline_term(raw: &str, to_lang: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -978,6 +1028,8 @@ fn translate_offline_term(raw: &str, to_lang: &str) -> String {
     trimmed.to_string()
 }
 
+/// [EN] Translates cell text offline (`review.translate`) and optionally writes the result to `targetCell`.
+/// [JA] 指定セルまたはテキストをオフライン日英翻訳し、`apply: true` の場合は対象セルへ書き込みます。
 fn review_translate(s: &mut Session, p: &Json) -> Result<Json> {
     let cell = cell_param(s, p, "cell")?.unwrap_or(s.doc()?.selection.active);
     let raw = if let Some(t) = str_param(p, "text") {
@@ -1006,6 +1058,8 @@ fn review_translate(s: &mut Session, p: &Json) -> Result<Json> {
     }))
 }
 
+/// [EN] Returns up to the 50 most recent command journal entries for the session (`review.showChanges`).
+/// [JA] 現在のセッションで実行された直近最大50件のコマンド変更履歴を返します。
 fn show_changes(s: &mut Session, _p: &Json) -> Result<Json> {
     let _ = s.doc()?;
     let changes: Vec<Json> = s

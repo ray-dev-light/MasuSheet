@@ -1,30 +1,19 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import com.masusheet.app.ai.AiChatMessage
+import com.masusheet.app.ai.AiClarifyingQuestion
+import com.masusheet.app.ai.AiPlanSession
+import com.masusheet.app.ai.AiTurnExecutionResult
+import com.masusheet.app.ai.MacroDefinition
+import com.masusheet.app.ai.MacroStudioEngine
+import com.masusheet.app.ai.SpreadsheetAiAgent
+import com.masusheet.app.ai.VbaDebugState
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.MasuSheetUiState
 import kotlinx.coroutines.launch
-import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.Base64
-import kotlin.math.abs
-import kotlin.math.roundToInt
-import com.masusheet.app.MasuSheetViewModel.*
 
 /**
  * ============================================================================
@@ -40,8 +29,8 @@ import com.masusheet.app.MasuSheetViewModel.*
 // --- All-in-One Macro & VBA Studio ---
 
 /**
- * [EN] ViewModel action/helper `onStartMacroRecording` handling start macro recording while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onStartMacroRecording` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Begins recording user spreadsheet commands into a named macro with optional shortcut metadata and relative/absolute reference mode.
+ * [JA] 指定されたマクロ名・ショートカット・相対／絶対参照モードでユーザー操作の記録を開始します。
  */
 fun MasuSheetViewModel.onStartMacroRecording(
     name: String,
@@ -63,8 +52,8 @@ fun MasuSheetViewModel.onStartMacroRecording(
 }
 
 /**
- * [EN] ViewModel action/helper `onStopMacroRecording` handling stop macro recording while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onStopMacroRecording` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Stops macro recording, transpiles captured command steps into VBA source code, and saves the resulting `MacroDefinition`.
+ * [JA] マクロ記録を停止し、記録された操作ステップからVBAコードを自動生成して保存済みマクロ一覧に追加します。
  */
 fun MasuSheetViewModel.onStopMacroRecording(): MacroDefinition? {
     val cur = _uiState.value
@@ -94,8 +83,8 @@ fun MasuSheetViewModel.onStopMacroRecording(): MacroDefinition? {
 }
 
 /**
- * [EN] ViewModel action/helper `onToggleMacroRelativeMode` handling toggle macro relative mode while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onToggleMacroRelativeMode` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Toggles macro recording between relative cell offsets (`ActiveCell.Offset`) and absolute A1 references.
+ * [JA] マクロ記録時のセル参照方式を「相対参照記録」と「絶対参照記録」の間で切り替えます。
  */
 fun MasuSheetViewModel.onToggleMacroRelativeMode() {
     val next = !_uiState.value.macroRelativeMode
@@ -107,8 +96,8 @@ fun MasuSheetViewModel.onToggleMacroRelativeMode() {
 }
 
 /**
- * [EN] ViewModel action/helper `onSaveOrUpdateMacro` handling save or update macro while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSaveOrUpdateMacro` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Adds or replaces a `MacroDefinition` (matched case-insensitively by name) in the current workbook's saved macro list.
+ * [JA] 作成またはVBA編集されたマクロ定義を、現在のブックの保存済みマクロ一覧へ登録・上書き保存します。
  */
 fun MasuSheetViewModel.onSaveOrUpdateMacro(macro: MacroDefinition) {
     val cur = _uiState.value
@@ -120,8 +109,8 @@ fun MasuSheetViewModel.onSaveOrUpdateMacro(macro: MacroDefinition) {
 }
 
 /**
- * [EN] ViewModel action/helper `onDeleteMacro` handling delete macro while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDeleteMacro` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Removes the named macro from both the native engine script registry and `MasuSheetUiState.savedMacros`.
+ * [JA] 指定された名前のマクロをエンジン登録およびUIの保存済みマクロ一覧から削除します。
  */
 fun MasuSheetViewModel.onDeleteMacro(name: String) {
     val cur = _uiState.value
@@ -133,8 +122,8 @@ fun MasuSheetViewModel.onDeleteMacro(name: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onRunMacro` handling run macro while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onRunMacro` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Executes all expanded VBA statements (or recorded steps) of `macro`, tracking net Undo depth so the entire run can be rolled back in one click.
+ * [JA] マクロのVBAステートメント（または記録ステップ）を一括実行し、一括ロールバック用に増加したUndoステップ数を記録します。
  */
 fun MasuSheetViewModel.onRunMacro(macro: MacroDefinition): String {
     val undoStackBefore = customOverlayUndoStack.size
@@ -189,8 +178,8 @@ fun MasuSheetViewModel.onRunMacro(macro: MacroDefinition): String {
 }
 
 /**
- * [EN] ViewModel action/helper `onStartVbaDebug` handling start vba debug while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onStartVbaDebug` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Initializes the interactive 1-step VBA debugger at line 0 with expanded loop statements and an empty variable watch table.
+ * [JA] VBAコードのループを展開して1行ステップ実行デバッガを先頭行（0行目）で開始し、監視変数とログを初期化します。
  */
 fun MasuSheetViewModel.onStartVbaDebug(macroName: String, vbaCode: String) {
     val lines = MacroStudioEngine.expandVbaStatements(vbaCode)
@@ -209,8 +198,8 @@ fun MasuSheetViewModel.onStartVbaDebug(macroName: String, vbaCode: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onStepVbaDebug` handling step vba debug while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onStepVbaDebug` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Executes the current line in the VBA 1-step debugger, updates watched loop/local variables and console logs, and advances the instruction pointer.
+ * [JA] VBAデバッガの現在行を1ステップ実行し、変数ウォッチ一覧・実行ログ・Undoカウントを更新して次の行へ進めます。
  */
 fun MasuSheetViewModel.onStepVbaDebug(): Boolean {
     val cur = _uiState.value
@@ -262,8 +251,8 @@ fun MasuSheetViewModel.onStepVbaDebug(): Boolean {
 }
 
 /**
- * [EN] ViewModel action/helper `onStopVbaDebug` handling stop vba debug while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onStopVbaDebug` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Exits interactive VBA step-debugging mode while keeping accumulated console output visible for inspection.
+ * [JA] VBA 1ステップ実行デバッガを終了します（確認用のコンソール出力ログは保持します）。
  */
 fun MasuSheetViewModel.onStopVbaDebug() {
     val dbg = _uiState.value.vbaDebugState
@@ -273,8 +262,8 @@ fun MasuSheetViewModel.onStopVbaDebug() {
 }
 
 /**
- * [EN] ViewModel action/helper `onRollbackLastMacroRun` handling rollback last macro run while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onRollbackLastMacroRun` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Reverts every engine and overlay Undo step produced by the most recent macro run or VBA debug session.
+ * [JA] 直前のマクロ一括実行またはVBAステップ実行で行われたすべてのシート変更を一括で元に戻します。
  */
 fun MasuSheetViewModel.onRollbackLastMacroRun() {
     val steps = _uiState.value.lastMacroUndoSteps.coerceIn(0, 500)
@@ -301,8 +290,8 @@ fun MasuSheetViewModel.onRollbackLastMacroRun() {
 }
 
 /**
- * [EN] ViewModel action/helper `onGenerateVbaFromPrompt` handling generate vba from prompt while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onGenerateVbaFromPrompt` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Generates a VBA macro script from a natural-language prompt using the current sheet selection context.
+ * [JA] 現在のシート選択範囲をコンテキストとして、自然言語の指示文から実行可能なVBAコードを生成します。
  */
 fun MasuSheetViewModel.onGenerateVbaFromPrompt(prompt: String): String =
     MacroStudioEngine.generateVbaFromNaturalLanguage(prompt, _uiState.value.viewport)
@@ -310,8 +299,8 @@ fun MasuSheetViewModel.onGenerateVbaFromPrompt(prompt: String): String =
 // --- General-Purpose AI Spreadsheet Agent (Copilot / Gemini / Claude / GPT / Local) ---
 
 /**
- * [EN] ViewModel action/helper `onToggleAiPanel` handling toggle ai panel while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onToggleAiPanel` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Opens or closes the right-side AI Spreadsheet Assistant panel.
+ * [JA] 画面右側のAIスプレッドシートアシスタントパネルの表示／非表示を切り替えます。
  */
 fun MasuSheetViewModel.onToggleAiPanel(open: Boolean? = null) {
     val next = open ?: !_uiState.value.isAiPanelOpen
@@ -319,8 +308,8 @@ fun MasuSheetViewModel.onToggleAiPanel(open: Boolean? = null) {
 }
 
 /**
- * [EN] ViewModel action/helper `onResizePivotPaneWidth` handling resize pivot pane width while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onResizePivotPaneWidth` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Updates the width of the right-side PivotTable Fields pane, clamped to `220dp..760dp`.
+ * [JA] 右側の「ピボットテーブルのフィールド」ペインの幅を `220dp..760dp` の範囲内でリサイズします。
  */
 fun MasuSheetViewModel.onResizePivotPaneWidth(widthDp: Float) {
     val clamped = widthDp.coerceIn(220f, 760f)
@@ -328,8 +317,8 @@ fun MasuSheetViewModel.onResizePivotPaneWidth(widthDp: Float) {
 }
 
 /**
- * [EN] ViewModel action/helper `onResizeSplitPaneWidth` handling resize split pane width while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onResizeSplitPaneWidth` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Updates the width of the secondary workbook pane in side-by-side Split Book View, clamped to `240dp..880dp`.
+ * [JA] ブック並列表示（分割ビュー）時の右側サブブックペイン幅を `240dp..880dp` の範囲内でリサイズします。
  */
 fun MasuSheetViewModel.onResizeSplitPaneWidth(widthDp: Float) {
     val clamped = widthDp.coerceIn(240f, 880f)
@@ -337,8 +326,8 @@ fun MasuSheetViewModel.onResizeSplitPaneWidth(widthDp: Float) {
 }
 
 /**
- * [EN] ViewModel action/helper `onResizeAiPanelWidth` handling resize ai panel width while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onResizeAiPanelWidth` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Updates the width of the right-side AI Assistant panel, clamped to `220dp..820dp`.
+ * [JA] 右側のAIアシスタントパネルの幅を `220dp..820dp` の範囲内でリサイズします。
  */
 fun MasuSheetViewModel.onResizeAiPanelWidth(widthDp: Float) {
     val clamped = widthDp.coerceIn(220f, 820f)
@@ -346,8 +335,8 @@ fun MasuSheetViewModel.onResizeAiPanelWidth(widthDp: Float) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSelectAiModel` handling select ai model while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSelectAiModel` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Persists and activates the selected AI model provider (`auto`, `gemini`, `claude`, `gpt`, or `local`).
+ * [JA] 使用するAIモデル（`auto`・`gemini`・`claude`・`gpt`・`local`）を選択し、設定に永続化します。
  */
 fun MasuSheetViewModel.onSelectAiModel(modelId: String) {
     preferencesRepository.setAiModelId(modelId)
@@ -355,8 +344,8 @@ fun MasuSheetViewModel.onSelectAiModel(modelId: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSelectAiEditMode` handling select ai edit mode while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSelectAiEditMode` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Persists and switches the AI permission mode (`allow_edit`, `plan`, or `chat`) and clears any pending plan confirmation session.
+ * [JA] AI権限モード（`allow_edit` 編集許可・`plan` 事前確認・`chat` 会話のみ）を切り替え、未確定のプラン確認状態をリセットします。
  */
 fun MasuSheetViewModel.onSelectAiEditMode(modeId: String) {
     preferencesRepository.setAiEditMode(modeId)
@@ -367,25 +356,25 @@ fun MasuSheetViewModel.onSelectAiEditMode(modeId: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `getAiApiKeyForModel` handling get ai api key for model while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `getAiApiKeyForModel` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Retrieves the Keystore-encrypted API key stored for `modelId` (or empty string if unset).
+ * [JA] 指定された `modelId` に対応する暗号化保存済みAPIキーを取得します（未設定時は空文字）。
  */
 fun MasuSheetViewModel.getAiApiKeyForModel(modelId: String): String = preferencesRepository.getAiApiKey(modelId)
 /**
- * [EN] ViewModel action/helper `getAiCustomEndpoint` handling get ai custom endpoint while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `getAiCustomEndpoint` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Retrieves the user-configured custom HTTPS or `127.0.0.1` local LLM endpoint URL.
+ * [JA] 設定済みのカスタムAIエンドポイントURL（HTTPSまたは `127.0.0.1` ローカルLLM）を取得します。
  */
 fun MasuSheetViewModel.getAiCustomEndpoint(): String = preferencesRepository.getAiCustomEndpoint()
 /**
- * [EN] ViewModel action/helper `getAiCustomModelName` handling get ai custom model name while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `getAiCustomModelName` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Retrieves the custom model identifier configured for `modelId` (e.g. `qwen2.5:0.5b` or custom deployment name).
+ * [JA] 指定された `modelId` 向けに保存されているカスタムモデル名を取得します。
  */
 fun MasuSheetViewModel.getAiCustomModelName(modelId: String = _uiState.value.selectedAiModelId): String =
     preferencesRepository.getAiCustomModel(modelId)
 
 /**
- * [EN] ViewModel action/helper `onSaveAiProviderSettings` handling save ai provider settings while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSaveAiProviderSettings` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Saves the API key (into `AndroidKeystoreSecretStore`), custom endpoint URL, and custom model name for `modelId`.
+ * [JA] `modelId` のAPIキー（Keystore暗号化保存）、カスタムエンドポイントURL、およびカスタムモデル名を保存します。
  */
 fun MasuSheetViewModel.onSaveAiProviderSettings(modelId: String, apiKey: String, customEndpoint: String, customModelName: String) {
     preferencesRepository.setAiApiKey(modelId, apiKey)
@@ -403,8 +392,8 @@ fun MasuSheetViewModel.onSaveAiProviderSettings(modelId: String, apiKey: String,
 }
 
 /**
- * [EN] ViewModel action/helper `onSendAiPrompt` handling send ai prompt while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSendAiPrompt` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Submits a user prompt or pasted JSON command script to the AI agent, staging a confirmation card first whenever `plan` mode is active.
+ * [JA] AIへの指示文または貼り付けられたJSONコマンドを送信します（`plan` モード時はセル変更前に必ず確認セッションを挟みます）。
  */
 fun MasuSheetViewModel.onSendAiPrompt(prompt: String) {
     val clean = prompt.trim()
@@ -418,12 +407,51 @@ fun MasuSheetViewModel.onSendAiPrompt(prompt: String) {
     val updatedMsgs = cur.aiMessages + userMsg
     _uiState.value = cur.copy(aiMessages = updatedMsgs)
 
-    // [EN] If the user directly entered a MasuSheet JSON script block (`{"commands": [...]}`), execute it directly!
-    // [JA] 入力欄に直接JSONスクリプト (`{"commands": [...]}`) が入力された場合はそのまま実行します。
+    // [EN] If the user directly entered a MasuSheet JSON script block (`{"commands": [...]}`), honor the active AI permission mode:
+    //      - "allow_edit": execute validated commands immediately.
+    //      - "plan": stage a confirmation plan session first so no cells mutate without explicit approval.
+    //      - "chat" / "chat_only": display the reply/summary without executing commands.
+    // [JA] JSONスクリプト (`{"commands": [...]}`) 直接入力時も選択中の権限モードを厳守します
+    //      （「編集を許可」のみ即時実行、「プラン」は確認後に反映、「チャットのみ」はシート変更なし）。
     if (clean.startsWith("{") && clean.contains("\"commands\"")) {
         val directParsed = SpreadsheetAiAgent.parseJsonAiTurnResult(clean, cur.selectedAiEditMode)
         if (directParsed != null) {
-            applyAiExecutionResult(directParsed)
+            if (cur.selectedAiEditMode == "plan" && directParsed.commands.isNotEmpty()) {
+                val isEn = cur.language == "en"
+                val confirmQuestion = AiClarifyingQuestion(
+                    id = "confirm_json_script",
+                    title = if (isEn) {
+                        "Apply ${directParsed.commands.size} JSON script commands to the active sheet?"
+                    } else {
+                        "貼り付けられたJSONスクリプト（${directParsed.commands.size} 件の操作）をシートへ反映しますか？"
+                    },
+                    options = if (isEn) {
+                        listOf("Apply commands to sheet", "Cancel (do not modify sheet)")
+                    } else {
+                        listOf("構成を確認してシートへ反映する", "キャンセル（シートを変更しない）")
+                    }
+                )
+                val previewMsg = AiChatMessage(
+                    id = "a_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    text = if (isEn) {
+                        "[🧭 Plan Mode] Ready to apply ${directParsed.commands.size} validated commands: ${directParsed.replyText}"
+                    } else {
+                        "【🧭 プランモード】検証済みのJSONコマンド（${directParsed.commands.size} 件）を確認しました。実行前にご確認ください：\n${directParsed.replyText}"
+                    },
+                    summaryBullets = directParsed.summaryBullets
+                )
+                _uiState.value = _uiState.value.copy(
+                    aiMessages = _uiState.value.aiMessages + previewMsg,
+                    activeAiPlanSession = AiPlanSession(
+                        originalPrompt = clean,
+                        questions = listOf(confirmQuestion),
+                        currentStepIndex = 0
+                    )
+                )
+            } else {
+                applyAiExecutionResult(directParsed)
+            }
             return
         }
     }
@@ -496,8 +524,8 @@ fun MasuSheetViewModel.onSendAiPrompt(prompt: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onAnswerAiPlanQuestion` handling answer ai plan question while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onAnswerAiPlanQuestion` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Records the user's selected option or free-text answer for question `questionIndex` in the active AI planning session.
+ * [JA] AIプラン確認セッション内の質問 `questionIndex` に対する選択肢または自由記述回答を更新します。
  */
 fun MasuSheetViewModel.onAnswerAiPlanQuestion(questionIndex: Int, selectedOptionIndex: Int, customText: String = "") {
     val session = _uiState.value.activeAiPlanSession ?: return
@@ -514,8 +542,8 @@ fun MasuSheetViewModel.onAnswerAiPlanQuestion(questionIndex: Int, selectedOption
 }
 
 /**
- * [EN] ViewModel action/helper `onStepAiPlanQuestion` handling step ai plan question while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onStepAiPlanQuestion` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Moves backward or forward (`delta`) between clarifying questions in the active AI planning card.
+ * [JA] AIプラン確認カードの現在の質問ステップを前後（`delta`）へ移動します。
  */
 fun MasuSheetViewModel.onStepAiPlanQuestion(delta: Int) {
     val session = _uiState.value.activeAiPlanSession ?: return
@@ -526,12 +554,26 @@ fun MasuSheetViewModel.onStepAiPlanQuestion(delta: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onExecuteConfirmedAiPlan` handling execute confirmed ai plan while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onExecuteConfirmedAiPlan` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Executes (or cancels if declined) the active AI plan session after user confirmation and applies the resulting validated commands.
+ * [JA] ユーザーが確認したAIプラン（またはJSONコマンド確認カード）を確定実行し、検証済みコマンドをシートへ反映します。
  */
 fun MasuSheetViewModel.onExecuteConfirmedAiPlan() {
     val cur = _uiState.value
     val session = cur.activeAiPlanSession ?: return
+    val rawOrig = session.originalPrompt.trim()
+    if (rawOrig.startsWith("{") && rawOrig.contains("\"commands\"")) {
+        val firstQuestion = session.questions.firstOrNull()
+        if (firstQuestion != null && firstQuestion.selectedIndex == 1 && firstQuestion.customText.isBlank()) {
+            _uiState.value = cur.copy(activeAiPlanSession = null)
+            return
+        }
+        val parsed = SpreadsheetAiAgent.parseJsonAiTurnResult(rawOrig, "allow_edit")
+        _uiState.value = cur.copy(activeAiPlanSession = null)
+        if (parsed != null) {
+            applyAiExecutionResult(parsed)
+        }
+        return
+    }
     val answersMap = session.questions.associate { q -> q.title to q.resolvedAnswer() }
     val apiKey = preferencesRepository.getAiApiKey(cur.selectedAiModelId)
     val customEndpoint = preferencesRepository.getAiCustomEndpoint()
@@ -577,33 +619,39 @@ fun MasuSheetViewModel.onExecuteConfirmedAiPlan() {
 }
 
 /**
- * [EN] ViewModel action/helper `onCancelAiPlan` handling cancel ai plan while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onCancelAiPlan` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Dismisses the active AI planning confirmation session without modifying any cells.
+ * [JA] シートを一切変更せずに、現在表示中のAIプラン確認セッションをキャンセルします。
  */
 fun MasuSheetViewModel.onCancelAiPlan() {
     _uiState.value = _uiState.value.copy(activeAiPlanSession = null)
 }
 
 /**
- * [EN] ViewModel action/helper `onImportWebAiJsonResponse` handling import web ai json response while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onImportWebAiJsonResponse` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Parses a JSON response pasted from an external Web AI, routing through `plan` confirmation when in Plan Mode or applying allowlisted commands.
+ * [JA] 外部Web AIから貼り付けられたJSON応答を解析し、プランモード時は確認カードを表示、編集許可時は検証済みコマンドを適用します。
  */
 fun MasuSheetViewModel.onImportWebAiJsonResponse(rawText: String): Boolean {
-    val parsed = SpreadsheetAiAgent.parseJsonAiTurnResult(rawText, _uiState.value.selectedAiEditMode)
+    val cur = _uiState.value
+    val parsed = SpreadsheetAiAgent.parseJsonAiTurnResult(rawText, cur.selectedAiEditMode)
     if (parsed == null) {
-        val isEn = _uiState.value.language == "en"
-        _uiState.value = _uiState.value.copy(
+        val isEn = cur.language == "en"
+        _uiState.value = cur.copy(
             errorMessage = if (isEn) "Could not parse JSON response from Web AI" else "Web AIの回答から有効なJSONコマンドを検出できませんでした"
         )
         return false
+    }
+    if (cur.selectedAiEditMode == "plan" && parsed.commands.isNotEmpty()) {
+        val scriptJson = SpreadsheetAiAgent.formatTurnResultAsScriptJson(parsed)
+        onSendAiPrompt(scriptJson)
+        return true
     }
     applyAiExecutionResult(parsed)
     return true
 }
 
 /**
- * [EN] ViewModel action/helper `applyAiExecutionResult` handling apply ai execution result while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `applyAiExecutionResult` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Dispatches validated AI spreadsheet and chart-creation commands, records net Undo depth, and appends the assistant summary message.
+ * [JA] AI応答の検証済みコマンドとグラフ挿入を実行し、1クリックで元に戻せるようUndoステップ数を記録してチャット履歴を更新します。
  */
 internal fun MasuSheetViewModel.applyAiExecutionResult(result: AiTurnExecutionResult) {
     val undoStackBefore = customOverlayUndoStack.size
@@ -666,8 +714,8 @@ internal fun MasuSheetViewModel.applyAiExecutionResult(result: AiTurnExecutionRe
 }
 
 /**
- * [EN] ViewModel action/helper `onUndoLastAiEdit` handling undo last ai edit while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onUndoLastAiEdit` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Reverts all spreadsheet mutations and removes any charts created by the most recent AI assistant turn.
+ * [JA] 直前のAI実行によって行われたセル編集および挿入グラフをすべて元に戻します。
  */
 fun MasuSheetViewModel.onUndoLastAiEdit() {
     val cur = _uiState.value

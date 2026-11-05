@@ -1,9 +1,13 @@
+// Modified in 2026 for MasuSheet (Android spreadsheet fork of GridCraft).
 //! The GridCraft document model: workbooks, sheets, a copy-on-write cell store, interned
 //! styles, defined names, tables, conditional formats, validation, comments, charts and print
 //! settings. Pure data; calculation lives in `gridcraft-calc`.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+/// [EN] Public Base64 encoder/decoder shared by `.xlsx` DrawingML media serialization,
+///      command handlers, and the MasuSheet Android JNI bridge (`masusheet-jni`).
+/// [JA] `.xlsx` 埋め込み画像・コマンド層・MasuSheet Android JNI ブリッジで共用する Base64 エンコーダ／デコーダです。
 pub mod b64;
 pub mod cell;
 mod cellmap;

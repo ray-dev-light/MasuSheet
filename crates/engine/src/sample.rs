@@ -9,13 +9,24 @@ use serde_json::json;
 
 use crate::{DocState, Session};
 
-pub const SAMPLES: &[(&str, &str)] = &[("budget", "Household Budget"), ("sales", "Quarterly Sales Dashboard"), ("grades", "Gradebook"), ("repair", "修理依頼書.xlsx")];
+/// [EN] Built-in sample workbook catalog (`id`, display title), including the Japanese
+///      repair/inspection checklist (`"repair"`) added for MasuSheet's interactive checkbox demo.
+/// [JA] 組み込みサンプルブック一覧（IDと表示タイトル）です。MasuSheet 向けにセル内チェックボックス対応の
+///      日本語テンプレート（`"repair"` / `"修理依頼書.xlsx"`）を追加しています。
+pub const SAMPLES: &[(&str, &str)] = &[
+    ("budget", "Household Budget"),
+    ("sales", "Quarterly Sales Dashboard"),
+    ("grades", "Gradebook"),
+    ("repair", "修理依頼書.xlsx"),
+];
 
 pub fn title(name: &str) -> String {
     SAMPLES.iter().find(|(n, _)| *n == name).map(|(_, t)| t.to_string()).unwrap_or_else(|| "Sample".into())
 }
 
-/// Builds a sample by replaying commands (so samples also exercise the command layer).
+/// [EN] Builds a sample workbook by replaying engine commands so sample templates also exercise
+///      the command execution layer.
+/// [JA] エンジンコマンドを順次再生してサンプルワークブックを生成します。
 pub fn build(name: &str) -> Option<Workbook> {
     let mut s = Session::new();
     let mut wb = Workbook::new();
@@ -216,6 +227,10 @@ pub fn blank_sheet(name: &str) -> Sheet {
 }
 
 
+/// [EN] Populates the Japanese repair & inspection request checklist (`"repair"`), demonstrating
+///      merged cells, styled headers, and interactive ballot-box checkboxes (`□` / `☑`).
+/// [JA] 結合セル・見出し装飾・クリック切替対応チェックボックス（`□` / `☑`）を備えた
+///      「修理・点検お申し込み兼チェックシート」サンプルを構築します。
 fn repair(s: &mut Session) -> bool {
     let rows = json!([
         ["修理・点検お申し込み兼チェックシート", null, null, null],

@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- [EN] Exclude encrypted API key storage from legacy Auto Backup. -->
-<!-- [JA] 暗号化された API キー保管領域をクラウド自動バックアップから除外します。 -->
+<!-- [EN] Exclude encrypted API key storage, local file history, and temporary handoff/clipboard files from legacy Auto Backup. -->
+<!-- [JA] 暗号化 API キー保管領域、最近開いたローカルパス設定、および一時ハンドオフ／クリップボード画像をクラウド自動バックアップから除外します。 -->
 <full-backup-content>
     <exclude domain="sharedpref" path="masusheet_secure_secrets.xml" />
+    <exclude domain="sharedpref" path="masusheet_prefs.xml" />
     <exclude domain="file" path="handoff" />
+    <exclude domain="file" path="clipboard_images" />
 </full-backup-content>

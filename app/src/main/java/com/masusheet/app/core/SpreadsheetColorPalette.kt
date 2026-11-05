@@ -1,23 +1,4 @@
-package com.masusheet.app
-
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.util.Base64
-import kotlin.math.roundToInt
+package com.masusheet.app.core
 
 /**
  * ============================================================================
@@ -31,11 +12,10 @@ import kotlin.math.roundToInt
  */
 
 /**
- * Full Microsoft Spreadsheet Color System:
- * - 10 Base Theme Colors × 6 rows (Base + 5 HSL Tint/Shade rows = 60 colors)
- * - 10 Standard Colors
- * - Recent Colors + Custom 24-bit RGB (0..255 sliders + #RRGGBB Hex)
- * - Theme presets (Office, Grayscale, Blue Warm, Green, Violet)
+ * [EN] Provides the 60-color theme matrix (10 base colors × 6 rows including 5 HSL tint/shade steps),
+ * 10 standard colors, 24-bit RGB/Hex conversion helpers, and named theme color presets.
+ * [JA] 10基本色×6行（ベース＋HSL明暗5段階＝60色）のテーマカラーマトリクス、標準10色、
+ * 24ビットRGB／16進カラー変換ヘルパー、および名前付きテーマ配色プリセットを提供します。
  */
 object SpreadsheetColorPalette {
     val DEFAULT_THEME_BASE_COLORS: List<Int> = listOf(
@@ -70,7 +50,7 @@ object SpreadsheetColorPalette {
     )
 
     val THEME_PRESETS: Map<String, List<Int>> = mapOf(
-        "Office (標準)" to DEFAULT_THEME_BASE_COLORS,
+        "標準 (デフォルト)" to DEFAULT_THEME_BASE_COLORS,
         "グレースケール" to listOf(
             0xFFFFFFFF.toInt(), 0xFF000000.toInt(), 0xFFF2F2F2.toInt(), 0xFF333333.toInt(),
             0xFF595959.toInt(), 0xFF7F7F7F.toInt(), 0xFFA6A6A6.toInt(), 0xFFBFBFBF.toInt(), 0xFFD9D9D9.toInt(), 0xFF404040.toInt()
@@ -148,8 +128,8 @@ object SpreadsheetColorPalette {
     }
 
     /**
-     * Generates the 6 rows × 10 columns (60 colors) Spreadsheet Theme Color Matrix from the 10 base theme colors.
-     * Row 0 = Base colors; Rows 1..5 = Spreadsheet's 5 tint/shade steps per column.
+     * [EN] Generates the 6×10 theme color matrix (row 0 = 10 base theme colors; rows 1..5 = 5 progressive tint/shade variations per column).
+     * [JA] 10色の基本テーマカラーから、明暗5段階のグラデーションを含む 6行×10列（計60色）のテーマカラーパレット行列を生成します。
      */
     fun buildThemeColorMatrix(baseColors: List<Int> = DEFAULT_THEME_BASE_COLORS): List<List<Int>> {
         val cols = (0 until 10).map { idx ->

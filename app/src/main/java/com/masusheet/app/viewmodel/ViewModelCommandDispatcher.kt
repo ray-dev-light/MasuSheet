@@ -1,30 +1,13 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import org.json.JSONArray
+import com.masusheet.app.catalog.SpreadsheetChartTypeCatalog
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.core.SpreadsheetColorPalette
+import com.masusheet.app.model.CustomCellStyleOverride
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeViewportSnapshot
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.Base64
-import kotlin.math.abs
-import kotlin.math.roundToInt
-import com.masusheet.app.MasuSheetViewModel.*
 
 /**
  * ============================================================================
@@ -38,12 +21,16 @@ import com.masusheet.app.MasuSheetViewModel.*
  */
 
 /**
- * [EN] ViewModel action/helper `dispatchCommand` handling dispatch command while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `dispatchCommand` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Central command router handling all 292 ribbon, keyboard, macro, and AI command IDs across ViewModel overlays and the Rust JNI engine.
+ * [JA] リボン・ショートカット・マクロ・AIからの全292コマンドIDを受け取り、Kotlin側オーバーレイ処理とRust JNIエンジン実行を統合ディスパッチします。
  */
 internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: String = "{}") {
     if (commandId == "file.newBlank") {
         onCreateNewBlankWorkbookSession()
+        return
+    }
+    if (commandId == "app.aboutLicenses") {
+        onOpenLicensesDialog(true)
         return
     }
     if (commandId == "home.wrapText" || commandId == "format.wrapText") {

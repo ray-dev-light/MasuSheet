@@ -1,24 +1,8 @@
-package com.masusheet.app
+package com.masusheet.app.core
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
-import java.text.SimpleDateFormat
+import com.masusheet.app.R
+import com.masusheet.app.catalog.SpreadsheetChartTypeCatalog
 import java.util.Date
-import java.util.Locale
-import kotlin.math.abs
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.roundToInt
 
 /**
  * ============================================================================
@@ -205,7 +189,8 @@ object SpreadsheetI18n {
         "🗑️ 削除" to "🗑️ Delete",
 
         // Page Layout Tab
-        "🎨 テーマ配色変更 (Office / 緑 / 青 / 暖色)" to "🎨 Themes & Colors (Office / Green / Blue / Warm)",
+        "🎨 テーマ配色変更 (標準 / 緑 / 青 / 暖色)" to "🎨 Themes & Colors (Standard / Green / Blue / Warm)",
+        "📜 OSSライセンス・このアプリについて" to "📜 About & OSS Licenses",
         "📄 縦向き (Portrait)" to "📄 Portrait",
         "📄 横向き (Landscape)" to "📄 Landscape",
         "📐 用紙: A4" to "📐 Size: A4",
@@ -439,7 +424,7 @@ object SpreadsheetI18n {
         "Web/キューブ" to "Web & Cube",
 
         // Workbook Theme Presets (Color Picker)
-        "Office (標準)" to "Office (Default)",
+        "標準 (デフォルト)" to "Standard (Default)",
         "グレースケール" to "Grayscale",
         "エメラルド・グリーン" to "Emerald Green",
         "オーシャン・ブルー" to "Ocean Blue",

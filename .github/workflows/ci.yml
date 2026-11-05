@@ -21,18 +21,20 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Test Rust Core, Engine, & JNI crates
-        run: |
-          cargo test -p gridcraft-core -p gridcraft-numfmt -p gridcraft-formula \
-            -p gridcraft-functions -p gridcraft-model -p gridcraft-calc \
-            -p gridcraft-xlsx -p gridcraft-chart -p gridcraft-engine -p masusheet-jni
+      - name: Lint Rust Workspace Crates (Clippy)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test Rust Workspace Crates
+        run: cargo test --workspace
 
       - name: Build Host JNI Library for Android Unit Tests
-        run: cargo build --manifest-path crates/jni/Cargo.toml --release
+        run: cargo build -p masusheet-jni --release
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

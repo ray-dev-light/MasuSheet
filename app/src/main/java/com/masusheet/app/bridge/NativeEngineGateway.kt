@@ -1,23 +1,14 @@
-package com.masusheet.app
+package com.masusheet.app.bridge
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.ChartSeries
+import com.masusheet.app.model.NativeCellModel
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.model.SheetObjectKind
+import java.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
-import java.util.Base64
-import kotlin.math.roundToInt
 
 /**
  * ============================================================================
@@ -178,10 +169,13 @@ class RustJniEngineGateway : NativeEngineGateway {
             return fallback.readSheetCells(sheetIndex, maxRows, maxCols)
         }
         return runCatching {
+            val safeMaxRows = maxRows.coerceIn(1, 50_000)
+            val safeMaxCols = maxCols.coerceIn(1, 1_024)
             val params = JSONObject()
+                .put("sheetIndex", sheetIndex)
                 .put("sheet", sheetIndex)
-                .put("maxRows", maxRows)
-                .put("maxCols", maxCols)
+                .put("maxRows", safeMaxRows)
+                .put("maxCols", safeMaxCols)
                 .toString()
             val raw = if (currentSessionId > 0L) {
                 MasuSheetNativeBridge.nativeExecuteCommandSession(currentSessionId, "jni.readSheetCells", params)
@@ -189,13 +183,35 @@ class RustJniEngineGateway : NativeEngineGateway {
                 MasuSheetNativeBridge.nativeExecuteCommand("jni.readSheetCells", params)
             }
             val snapObj = JSONObject(raw)
-            val resJson = snapObj.optString("resultJson", "")
-            if (resJson.isBlank()) return emptyMap()
-            val resObj = JSONObject(resJson)
+            val resObj = snapObj.optJSONObject("result")
+                ?: snapObj.optString("resultJson", "").takeIf { it.isNotBlank() }?.let { JSONObject(it) }
+                ?: return emptyMap()
             val arr = resObj.optJSONArray("cells") ?: return emptyMap()
             val out = HashMap<Long, NativeCellModel>(arr.length())
             for (i in 0 until arr.length()) {
-                val c = arr.getJSONArray(i)
+                val obj = arr.optJSONObject(i)
+                if (obj != null) {
+                    val row = obj.optInt("r", 0)
+                    val col = obj.optInt("c", 0)
+                    val disp = obj.optString("t", "")
+                    val edit = obj.optString("e", "").ifEmpty { disp }
+                    out[NativeViewportSnapshot.packCellKey(row, col)] = NativeCellModel(
+                        row = row,
+                        col = col,
+                        displayText = disp,
+                        editText = edit,
+                        bgColor = obj.optInt("bg", 0),
+                        fgColor = obj.optInt("fg", 0),
+                        fontSize = MasuSheetConfig.parseFiniteFloatOrNull(obj.optDouble("fs", 11.0).toString()) ?: 11f,
+                        flags = obj.optInt("fl", 0),
+                        borderTop = obj.optInt("bt", 0),
+                        borderRight = obj.optInt("br", 0),
+                        borderBottom = obj.optInt("bb", 0),
+                        borderLeft = obj.optInt("bl", 0)
+                    )
+                    continue
+                }
+                val c = arr.optJSONArray(i) ?: continue
                 val row = c.optInt(0, 0)
                 val col = c.optInt(1, 0)
                 out[NativeViewportSnapshot.packCellKey(row, col)] = NativeCellModel(

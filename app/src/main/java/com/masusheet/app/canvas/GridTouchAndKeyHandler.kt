@@ -1,136 +1,40 @@
-package com.masusheet.app
+package com.masusheet.app.canvas
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.RectF
-import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Build
-import android.os.Bundle
-import android.text.Editable
-import android.text.InputType
-import android.text.Spannable
-import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
-import android.util.TypedValue
-import android.view.GestureDetector
-import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.PointerIcon
-import android.view.ScaleGestureDetector
 import android.view.VelocityTracker
-import android.view.View
-import android.view.ViewConfiguration
-import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputConnectionWrapper
-import android.view.inputmethod.InputContentInfo
-import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
-import android.widget.LinearLayout
-import android.widget.OverScroller
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContract
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerHoverIcon
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
+import com.masusheet.app.canvas.MasuSheetNativeGridView.ChartRangeDragMode
+import com.masusheet.app.canvas.MasuSheetNativeGridView.SheetObjectHitPart
+import com.masusheet.app.core.ScrollInputMath
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.viewmodel.getActiveCellValidation
+import com.masusheet.app.viewmodel.isTableHeaderCell
+import com.masusheet.app.viewmodel.onAutoFillRange
+import com.masusheet.app.viewmodel.onDeleteSelectedSheetObjects
+import com.masusheet.app.viewmodel.onDoubleTapAutoFillCornerHandle
+import com.masusheet.app.viewmodel.onDragFreezePaneBoundary
+import com.masusheet.app.viewmodel.onMoveChartSeriesAxisRangeByDrag
+import com.masusheet.app.viewmodel.onMoveColumns
+import com.masusheet.app.viewmodel.onMoveMultipleSheetObjects
+import com.masusheet.app.viewmodel.onMoveOrResizeSheetObject
+import com.masusheet.app.viewmodel.onMoveSelectionRange
+import com.masusheet.app.viewmodel.onNudgeSelectedSheetObjects
+import com.masusheet.app.viewmodel.onOpenColumnFilterMenu
+import com.masusheet.app.viewmodel.onResizeChartAxisRangeByDrag
+import com.masusheet.app.viewmodel.onRotateSheetObject
+import com.masusheet.app.viewmodel.onSelectChartSubElement
+import com.masusheet.app.viewmodel.onSelectSheetObject
+import com.masusheet.app.viewmodel.onSetZoomPercent
+import com.masusheet.app.viewmodel.onUnhideColumnsAround
+import com.masusheet.app.viewmodel.onUnhideRowsAround
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -140,7 +44,6 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
-import com.masusheet.app.MasuSheetNativeGridView.*
 
 /**
  * ============================================================================
@@ -154,8 +57,8 @@ import com.masusheet.app.MasuSheetNativeGridView.*
  */
 
 /**
- * Handles right-click (`BUTTON_SECONDARY`) or long-press at `(screenX, screenY)` by selecting
- * the target object/cell/column/row and displaying the native context menu.
+ * [EN] Handles secondary mouse click or long-press at `(screenX, screenY)` by selecting the hit header/object/cell and opening the floating context menu.
+ * [JA] 右クリックまたは長押し座標 `(screenX, screenY)` にある行列ヘッダ・オブジェクト・セルを選択し、コンテキストメニューを表示します。
  */
 fun MasuSheetNativeGridView.handleRightClickAt(screenX: Float, screenY: Float): Boolean {
     val snap = currentViewport
@@ -228,8 +131,8 @@ fun MasuSheetNativeGridView.handleRightClickAt(screenX: Float, screenY: Float): 
 }
 
 /**
- * [EN] Grid canvas helper that executes `handleGenericMotionInput` (handle generic motion input) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `handleGenericMotionInput` 処理を実行します。
+ * [EN] Processes mouse wheel scrolling (`Ctrl`+wheel zoom, `Shift`+wheel horizontal scroll), hover cursor icons, trackpad pinch, and right-button press.
+ * [JA] マウスホイールスクロール（`Ctrl`+ホイール拡大縮小、`Shift`+横スクロール）、ホバーカーソル切替、トラックパッドピンチ、右クリックを処理します。
  */
 internal fun MasuSheetNativeGridView.handleGenericMotionInput(event: MotionEvent): Boolean? {
     if (event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS &&
@@ -288,8 +191,8 @@ internal fun MasuSheetNativeGridView.handleGenericMotionInput(event: MotionEvent
 }
 
 /**
- * [EN] Grid canvas helper that executes `handleTouchInput` (handle touch input) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `handleTouchInput` 処理を実行します。
+ * [EN] Processes touch, stylus, and mouse drag gestures across headers, freeze lines, AutoFill handle, floating objects (with edge auto-scroll), pinch-zoom, and inertial fling.
+ * [JA] タッチ・ペン・マウスによるセル選択、行列幅変更、固定線移動、オートフィル、オブジェクト移動／回転／リサイズ（端オートスクロール付）、ピンチズーム、慣性スクロールを処理します。
  */
 internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boolean? {
     // [EN] Handle Android 14+ trackpad two-finger pinch-to-zoom delivered via onTouchEvent
@@ -598,7 +501,7 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                 val rawCol = screenXToSheetCol(event.x)
                 val (anchorR, anchorC) = currentViewport.resolveAnchorCell(rawRow, rawCol)
 
-                // 5-point. Formula Point Mode (= + clicking/dragging another cell or range, matching Spreadsheet & original Rust MasuSheet!)
+                // 5-point. Formula Point Mode (= + clicking/dragging another cell or range, interactive formula reference pointing)
                 if (container.canPointFormulaReference()) {
                     val isSameEditingCell = (
                         currentViewport.sheetIndex == container.editingSheetIndex &&

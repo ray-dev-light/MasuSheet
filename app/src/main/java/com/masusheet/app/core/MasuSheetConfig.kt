@@ -1,22 +1,10 @@
-package com.masusheet.app
+package com.masusheet.app.core
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
 import android.content.Context
 import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.util.Base64
+import com.masusheet.app.R
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.SheetObjectKind
 import kotlin.math.roundToInt
 
 /**
@@ -229,8 +217,8 @@ object MasuSheetConfig {
     }
 
     /**
-     * Reads the exact pixel `(width, height)` from PNG, GIF, JPEG, or WEBP headers (pure Kotlin, works in JVM tests and Android),
-     * falling back to `BitmapFactory` on Android if needed.
+     * [EN] Reads pixel `(width, height)` directly from PNG, GIF, JPEG, or WebP binary headers (with Android `BitmapFactory` bounds fallback).
+     * [JA] PNG・GIF・JPEG・WebP のバイナリヘッダからピクセル寸法 `(width, height)` を高速解析します（必要に応じ `BitmapFactory` へフォールバック）。
      */
     fun decodeImageDimensions(bytes: ByteArray): Pair<Int, Int>? {
         if (bytes.size < 10) return null
@@ -317,9 +305,8 @@ object MasuSheetConfig {
     }
 
     /**
-     * Converts an image's pixel dimensions into natural spreadsheet points (`widthPt to heightPt`)
-     * while strictly preserving its original aspect ratio (`pxW : pxH`).
-     * Scales pixels by `0.55f` pt/px and fits within `(maxWidthPt, maxHeightPt)` and min `36f pt` on the longer edge.
+     * [EN] Computes aspect-ratio-preserving sheet dimensions `(widthPt, heightPt)` fitted within `(maxWidthPt, maxHeightPt)` from raw image bytes.
+     * [JA] 画像の元アスペクト比を維持したまま、シート上の上限サイズ `(maxWidthPt, maxHeightPt)` 内に収まる初期配置サイズ（pt単位）を算出します。
      */
     fun computeNaturalImageSizePt(
         bytes: ByteArray,
@@ -451,7 +438,8 @@ object MasuSheetConfig {
     }
 
     /**
-     * Builds a standards-compliant PNG byte array whose `IHDR` encodes `(widthPx, heightPx)`.
+     * [EN] Generates a standards-compliant minimal RGBA PNG byte array with valid `IHDR`, zlib `IDAT`, CRC32s, and `IEND` chunks for `(widthPx, heightPx)`.
+     * [JA] 指定ピクセル寸法 `(widthPx, heightPx)` を持つ標準準拠の最小RGBA PNGバイト列（CRC32検証済み `IHDR`/`IDAT`/`IEND`）を生成します。
      */
     fun buildValidMinimalPngBytes(widthPx: Int, heightPx: Int): ByteArray {
         val w = widthPx.coerceIn(1, 16384)
@@ -501,8 +489,8 @@ object MasuSheetConfig {
     }
 
     /**
-     * Dynamically detects the real folder paths available in the current Android / Linux VM environment
-     * so the Save Dialog shows folders that actually exist and match the user's device.
+     * [EN] Detects writable/persisted `Download`, `Documents`, and workspace folders in the current Android device environment for the Save Dialog.
+     * [JA] 実行中のAndroid端末環境で利用可能な「ダウンロード」「ドキュメント」等の実在保存先フォルダ一覧を検出して返します。
      */
     fun resolveEnvironmentSaveFolders(context: Context? = null): List<Pair<String, String>> {
         val result = mutableListOf<Pair<String, String>>()

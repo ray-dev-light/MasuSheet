@@ -1,30 +1,15 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import org.json.JSONArray
+import com.masusheet.app.catalog.SpreadsheetChartTypeCatalog
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.ChartSeries
+import com.masusheet.app.model.ChartTableColumnOption
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.model.SheetObjectKind
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.Base64
-import kotlin.math.abs
-import kotlin.math.roundToInt
-import com.masusheet.app.MasuSheetViewModel.*
 
 /**
  * ============================================================================
@@ -38,8 +23,8 @@ import com.masusheet.app.MasuSheetViewModel.*
  */
 
 /**
- * [EN] UI/application helper `ExtractedChartTableData` (extracted chart table data).
- * [JA] `ExtractedChartTableData` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Parsed 2D table data (`categories`, `seriesList`, A1 `rangeAddr`, and X/Y column indices) extracted from worksheet cells for chart creation.
+ * [JA] シート範囲から抽出したグラフ描画用テーブルデータ（カテゴリラベル列、データ系列リスト、A1範囲文字列、X/Y列番号）を保持します。
  */
 internal data class ExtractedChartTableData(
     val categories: List<String>,
@@ -50,8 +35,8 @@ internal data class ExtractedChartTableData(
 )
 
 /**
- * [EN] ViewModel action/helper `resolveChartColumnHeaderName` handling resolve chart column header name while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `resolveChartColumnHeaderName` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Resolves a readable series/axis header name for column `col` (falling back to `Col A` / `列A` when the header cell is numeric or blank).
+ * [JA] グラフ用の列見出し名を解決します（先頭行が空欄または純粋な数値データの場合は `列A` / `Col A` にフォールバックします）。
  */
 internal fun MasuSheetViewModel.resolveChartColumnHeaderName(
     vp: NativeViewportSnapshot,
@@ -77,8 +62,8 @@ internal fun MasuSheetViewModel.resolveChartColumnHeaderName(
 }
 
 /**
- * Extracts 2D table data (`categories`, `seriesList`, `rangeText`) from the currently selected range
- * (or auto-detects the contiguous table around the active cell / sheet when only 1 cell is selected).
+ * [EN] Extracts `(categories, seriesList, rangeAddr)` from the current selection (or auto-detected contiguous table when a single cell is active).
+ * [JA] 現在の選択範囲（単一セル選択時は周辺の連続データ表を自動検出）から、グラフ用の `(カテゴリ, 系列リスト, 範囲文字列)` を抽出します。
  */
 fun MasuSheetViewModel.extractChartDataFromViewport(vp: NativeViewportSnapshot): Triple<List<String>, List<ChartSeries>, String> {
     val res = extractChartDataWithColumns(vp)
@@ -86,8 +71,8 @@ fun MasuSheetViewModel.extractChartDataFromViewport(vp: NativeViewportSnapshot):
 }
 
 /**
- * [EN] ViewModel action/helper `extractChartDataWithColumns` handling extract chart data with columns while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `extractChartDataWithColumns` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Extracts full `ExtractedChartTableData` including detected X-axis and Y-axis column indices, handling both headed and headerless numeric tables.
+ * [JA] 見出し行の有無を自動判定しながら、選択範囲または隣接データ表からX軸列・Y軸列インデックス付きのグラフ用データを抽出します。
  */
 internal fun MasuSheetViewModel.extractChartDataWithColumns(vp: NativeViewportSnapshot): ExtractedChartTableData {
     var r0 = minOf(vp.selStartRow, vp.selEndRow).coerceAtLeast(0)
@@ -388,8 +373,8 @@ internal fun MasuSheetViewModel.extractChartDataWithColumns(vp: NativeViewportSn
 }
 
 /**
- * [EN] ViewModel action/helper `onInsertChart` handling insert chart while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onInsertChart` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Inserts a floating chart of `chartType` bound to the current cell selection (or nearby table) on the active sheet.
+ * [JA] 現在のセル選択範囲（または近傍のデータ表）を元データとして、指定種別 `chartType` のグラフをアクティブシートに挿入します。
  */
 fun MasuSheetViewModel.onInsertChart(chartType: String) {
     val vp = _uiState.value.viewport
@@ -404,8 +389,8 @@ fun MasuSheetViewModel.onInsertChart(chartType: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onInsertChartFromRange` handling insert chart from range while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onInsertChartFromRange` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Creates and selects a floating chart of `chartType` bound to `(startRow..endRow, startCol..endCol)` and records an overlay Undo snapshot.
+ * [JA] 指定セル範囲 `(startRow..endRow, startCol..endCol)` に紐づくグラフを生成・選択状態にし、Undo履歴へ記録します。
  */
 fun MasuSheetViewModel.onInsertChartFromRange(
     chartType: String,
@@ -486,8 +471,8 @@ fun MasuSheetViewModel.onInsertChartFromRange(
 }
 
 /**
- * [EN] ViewModel action/helper `onOpenPivotChartPicker` handling open pivot chart picker while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onOpenPivotChartPicker` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Opens or closes the 32-subtype chart / PivotChart picker dialog.
+ * [JA] 全32種類のグラフ／ピボットグラフ選択ダイアログの表示・非表示を切り替えます。
  */
 fun MasuSheetViewModel.onOpenPivotChartPicker(open: Boolean = true) {
     _uiState.value = _uiState.value.copy(isPivotChartPickerOpen = open)
@@ -516,8 +501,8 @@ fun MasuSheetViewModel.onOpenChartSelectDataDialog(objectId: String? = null, ope
 }
 
 /**
- * [EN] ViewModel action/helper `resolveTargetChartObjectId` handling resolve target chart object id while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `resolveTargetChartObjectId` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Resolves which chart ID to operate on from `objectId`, `chartSelectDataTargetId`, `selectedObjectId`, or the latest chart on the active sheet.
+ * [JA] 明示指定ID、データ選択対象ID、現在選択中のオブジェクト、またはシート上の最新グラフの順で操作対象のグラフIDを解決します。
  */
 internal fun MasuSheetViewModel.resolveTargetChartObjectId(objectId: String? = null): String? {
     val cur = _uiState.value
@@ -530,8 +515,8 @@ internal fun MasuSheetViewModel.resolveTargetChartObjectId(objectId: String? = n
 }
 
 /**
- * [EN] ViewModel action/helper `handleChartRangeOrAxisPicking` handling handle chart range or axis picking while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `handleChartRangeOrAxisPicking` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Routes interactive on-sheet cell-range selection to whole-table binding, X-axis binding, or Y-axis series binding according to `mode`.
+ * [JA] シート上での範囲ドラッグ選択結果を、`mode` に応じて表全体・X軸・Y軸追加／個別系列バインド処理へ振り分けます。
  */
 internal fun MasuSheetViewModel.handleChartRangeOrAxisPicking(chartId: String, rangeAddr: String, mode: String) {
     when {
@@ -573,7 +558,8 @@ fun MasuSheetViewModel.onStartChartRangePickingOnSheet(objectId: String? = null)
 }
 
 /**
- * Enters interactive on-sheet X-axis (`"x"` / `"series_x:idx"`) or Y-axis (`"y"` / `"y_append"` / `"series_y:idx"`) picking mode!
+ * [EN] Enters interactive on-sheet range-picking mode (`"x"`, `"y"`, `"y_append"`, `"series_x:idx"`, or `"series_y:idx"`) for the target chart.
+ * [JA] 対象グラフのX軸またはY軸データ範囲をシート上のセルドラッグで直接指定するインタラクティブ選択モードを開始します。
  */
 fun MasuSheetViewModel.onStartChartAxisPickingOnSheet(objectId: String? = null, axisMode: String = "x") {
     val cur = _uiState.value
@@ -608,8 +594,8 @@ fun MasuSheetViewModel.onStartChartAxisPickingOnSheet(objectId: String? = null, 
 }
 
 /**
- * [EN] ViewModel action/helper `onFinishChartRangePickingOnSheet` handling finish chart range picking on sheet while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onFinishChartRangePickingOnSheet` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Exits interactive on-sheet chart range picking mode and reopens the Select Data dialog for confirmation.
+ * [JA] シート上でのグラフ範囲選択モードを終了し、「データの選択」ダイアログを再表示します。
  */
 fun MasuSheetViewModel.onFinishChartRangePickingOnSheet() {
     val cur = _uiState.value
@@ -624,9 +610,8 @@ fun MasuSheetViewModel.onFinishChartRangePickingOnSheet() {
 }
 
 /**
- * Returns `[headerRow, dataStartRow, dataEndRow, startCol, endCol]` for the table associated with `objectId`
- * (or `customTableRangeText` if provided), expanding horizontally to include all columns of that table!
- * Also detects headerless numeric tables (e.g. `1..21` in col I, `2..42` in col J) so row 1 is never skipped.
+ * [EN] Computes `[headerRow, dataStartRow, dataEndRow, startCol, endCol]` for a chart's source table, preserving row 0 on headerless numeric tables.
+ * [JA] グラフの元データ表の境界 `[見出し行, データ開始行, データ終了行, 開始列, 終了列]` を算出します（見出しなし数値表の先頭行も欠落なく保持）。
  */
 fun MasuSheetViewModel.getChartSourceTableBounds(objectId: String? = null, customTableRangeText: String = ""): IntArray {
     val cur = _uiState.value
@@ -1008,8 +993,8 @@ fun MasuSheetViewModel.onToggleChartYAxisColumn(
 }
 
 /**
- * Atomically applies both the selected X-Axis column (`xColIndex`) and one or more Y-Axis columns (`yColIndices`)
- * from the table to the target chart!
+ * [EN] Binds `xColIndex` as the X-axis category/value column and `yColIndices` as plotted Y-axis series columns on the target chart.
+ * [JA] 対象グラフに対して、指定されたX軸列 (`xColIndex`) と1つ以上のY軸データ列 (`yColIndices`) を一括適用して再描画します。
  */
 fun MasuSheetViewModel.onApplyChartXYColumns(
     objectId: String? = null,
@@ -1502,8 +1487,8 @@ fun MasuSheetViewModel.onBindSelectionAsChartYAxis(
 }
 
 /**
- * Resolves the 0-based sheet cell bounds `[startRow, startCol, endRow, endCol]` for `seriesIndex`'s
- * X-Axis range (`isXAxis = true`) or Y-Axis range (`isXAxis = false`).
+ * [EN] Parses the 0-based `[startRow, startCol, endRow, endCol]` sheet coordinates for `seriesIndex`'s X-axis or Y-axis source range.
+ * [JA] グラフ内 `seriesIndex` 系列のX軸またはY軸参照文字列から、シート上の0始まり範囲座標 `[startRow, startCol, endRow, endCol]` を解決します。
  */
 fun MasuSheetViewModel.resolveChartSeriesAxisBounds(
     chartObj: NativeSheetObject,
@@ -1544,8 +1529,8 @@ fun MasuSheetViewModel.resolveChartSeriesAxisBounds(
 }
 
 /**
- * [EN] ViewModel action/helper `resolveChartSeriesAxisRangeText` handling resolve chart series axis range text while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `resolveChartSeriesAxisRangeText` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Returns the A1-style worksheet range string (`C3:C10`, etc.) bound to `seriesIndex`'s X-axis (`isXAxis = true`) or Y-axis (`isXAxis = false`).
+ * [JA] グラフ内 `seriesIndex` 系列のX軸またはY軸に紐づくA1形式のセル範囲文字列（例: `C3:C10`）を返します。
  */
 fun MasuSheetViewModel.resolveChartSeriesAxisRangeText(
     chartObj: NativeSheetObject,

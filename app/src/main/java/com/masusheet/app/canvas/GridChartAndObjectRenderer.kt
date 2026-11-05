@@ -1,146 +1,36 @@
-package com.masusheet.app
+package com.masusheet.app.canvas
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
-import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.text.Editable
-import android.text.InputType
-import android.text.Spannable
-import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
-import android.util.TypedValue
-import android.view.GestureDetector
-import android.view.Gravity
-import android.view.KeyEvent
-import android.view.MotionEvent
-import android.view.PointerIcon
-import android.view.ScaleGestureDetector
-import android.view.VelocityTracker
-import android.view.View
-import android.view.ViewConfiguration
-import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputConnectionWrapper
-import android.view.inputmethod.InputContentInfo
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
-import android.widget.LinearLayout
-import android.widget.OverScroller
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContract
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerHoverIcon
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
+import com.masusheet.app.canvas.MasuSheetNativeGridView.ChartRangeDragMode
+import com.masusheet.app.canvas.MasuSheetNativeGridView.ChartRangeRenderedTarget
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.core.SpreadsheetColorPalette
+import com.masusheet.app.core.SpreadsheetI18n
+import com.masusheet.app.model.ChartSeries
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.viewmodel.resolveChartSeriesAxisBounds
+import com.masusheet.app.viewmodel.resolveChartSeriesAxisRangeText
 import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.atan2
 import kotlin.math.cos
-import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
-import com.masusheet.app.MasuSheetNativeGridView.*
 
 /**
  * ============================================================================
@@ -154,8 +44,8 @@ import com.masusheet.app.MasuSheetNativeGridView.*
  */
 
 /**
- * [EN] Grid canvas helper that executes `drawSheetObjectsOverlay` (draw sheet objects overlay) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `drawSheetObjectsOverlay` 処理を実行します。
+ * [EN] Draws all floating charts, shapes, text boxes, and images on `sheetIndex`, plus selection handles, rotation knob, and bound source-range highlights.
+ * [JA] 対象シート上の全オブジェクト（グラフ・図形・テキストボックス・画像）と、選択時の回転ノブ・8方向リサイズハンドル・元データ範囲枠を描画します。
  */
 internal fun MasuSheetNativeGridView.drawSheetObjectsOverlay(canvas: Canvas, sheetIndex: Int) {
     val effectiveObjects = effectiveSheetObjects(sheetIndex)
@@ -401,8 +291,8 @@ internal fun MasuSheetNativeGridView.drawSheetObjectsOverlay(canvas: Canvas, she
 }
 
 /**
- * [EN] Grid canvas helper that executes `drawShapeGeometry` (draw shape geometry) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `drawShapeGeometry` 処理を実行します。
+ * [EN] Draws vector geometry (`rectangle`, `roundRect`, `oval`, `diamond`, `triangle`, `pentagon`, `hexagon`, `star`, `arrow`, `callout`, `line`) inside `rect`.
+ * [JA] 図形サブタイプに応じたベクターパス（四角形、角丸、円、ひし形、三角形、多角形、星、矢印、吹き出し、直線）を `rect` 内に描画します。
  */
 internal fun MasuSheetNativeGridView.drawShapeGeometry(canvas: Canvas, rect: RectF, subType: String, paint: Paint) {
     when (subType.lowercase()) {
@@ -554,8 +444,8 @@ internal fun MasuSheetNativeGridView.drawShapeGeometry(canvas: Canvas, rect: Rec
 }
 
 /**
- * [EN] Grid canvas helper that executes `formatChartValueCompact` (format chart value compact) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `formatChartValueCompact` 処理を実行します。
+ * [EN] Formats chart axis ticks and data labels compactly (`1.2M`, comma-grouped integers, or trimmed decimals).
+ * [JA] グラフの軸目盛りやデータラベル数値を、桁数に応じたコンパクトな表記（`1.2M`、カンマ区切り整数、小数）に整形します。
  */
 internal fun MasuSheetNativeGridView.formatChartValueCompact(v: Float): String {
     if (!v.isFinite()) return "0"
@@ -568,8 +458,8 @@ internal fun MasuSheetNativeGridView.formatChartValueCompact(v: Float): String {
 }
 
 /**
- * [EN] Grid canvas helper that executes `effectiveChartSeries` (effective chart series) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `effectiveChartSeries` 処理を実行します。
+ * [EN] Returns `obj.chartSeries` when populated, or synthesizes a single fallback series from legacy `obj.chartValues` so every chart renders cleanly.
+ * [JA] `obj.chartSeries` が存在する場合はそれを返し、単一配列 `chartValues` のみの場合は互換用の1系列データを生成して返します。
  */
 internal fun MasuSheetNativeGridView.effectiveChartSeries(obj: NativeSheetObject): List<ChartSeries> {
     val rawList = if (obj.chartSeries.isNotEmpty()) {
@@ -847,8 +737,8 @@ internal fun MasuSheetNativeGridView.drawSelectedChartSourceRangesOnGrid(canvas:
 }
 
 /**
- * [EN] Grid canvas helper that executes `drawChartObjectContent` (draw chart object content) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `drawChartObjectContent` 処理を実行します。
+ * [EN] Renders the full chart card inside `rect` across all 32 supported chart subtypes (column, bar, line, area, pie/doughnut, scatter/bubble, radar, combo, waterfall, etc.).
+ * [JA] 全32種類のグラフサブタイプ（縦棒・横棒・折れ線・面・円／ドーナツ・散布図／バブル・レーダー・複合・ウォーターフォール等）を `rect` 内に描画します。
  */
 internal fun MasuSheetNativeGridView.drawChartObjectContent(canvas: Canvas, rect: RectF, obj: NativeSheetObject) {
     val isEn = viewModel.uiState.value.language == "en"
@@ -1914,8 +1804,8 @@ internal fun MasuSheetNativeGridView.drawChartObjectContent(canvas: Canvas, rect
 }
 
 /**
- * Resolves which specific text or data element inside a Chart was double-clicked so [inCellEditText]
- * opens directly over that exact sub-element (Title, Legend Series Name, X-Axis Category Label, or Data Value)!
+ * [EN] Hit-tests which editable chart element (title, legend series name, category label, or data point value) was double-tapped at `(screenX, screenY)`.
+ * [JA] グラフ上のダブルタップ位置 `(screenX, screenY)` から、インプレース編集対象（タイトル・凡例系列名・軸ラベル・データ値）を特定します。
  */
 fun MasuSheetNativeGridView.resolveChartSubElementAt(
     obj: NativeSheetObject,
@@ -2049,8 +1939,8 @@ fun MasuSheetNativeGridView.resolveChartSubElementAt(
 }
 
 /**
- * [EN] Grid canvas helper that executes `getOrDecodeObjectBitmap` (get or decode object bitmap) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `getOrDecodeObjectBitmap` 処理を実行します。
+ * [EN] Fetches or decodes the `Bitmap` for an image `NativeSheetObject` via `imageBitmapCache`, skipping recycled bitmaps safely.
+ * [JA] 画像オブジェクトの `imageBytes` から `imageBitmapCache` 経由で `Bitmap` を取得・デコードします（破棄済みBitmapは自動再生成）。
  */
 internal fun MasuSheetNativeGridView.getOrDecodeObjectBitmap(obj: NativeSheetObject): Bitmap? {
     val bytes = obj.imageBytes ?: return null

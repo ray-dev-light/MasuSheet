@@ -1,23 +1,6 @@
-package com.masusheet.app
+package com.masusheet.app.model
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.util.Base64
-import kotlin.math.roundToInt
+import com.masusheet.app.core.MasuSheetConfig
 
 /**
  * ============================================================================
@@ -59,6 +42,7 @@ data class ChartSeries(
  * [EN] Immutable model of a floating chart, shape, textbox, or image anchored in points (`pt`) on a worksheet.
  * [JA] シート上の座標・サイズ (`pt`)、配色、回転角、グラフ系列・軸設定、画像バイト列等を保持するオブジェクトモデルです。
  */
+@androidx.compose.runtime.Immutable
 data class NativeSheetObject(
     val id: String,
     val sheetIndex: Int = 0,
@@ -94,7 +78,84 @@ data class NativeSheetObject(
     val yAxisMajorStep: Float? = null, // Y軸の表示間隔 / 目盛間隔 (null = 自動)
     val yAxisMin: Float? = null,
     val yAxisMax: Float? = null
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is NativeSheetObject) return false
+        return id == other.id &&
+            sheetIndex == other.sheetIndex &&
+            kind == other.kind &&
+            subType == other.subType &&
+            xPt == other.xPt &&
+            yPt == other.yPt &&
+            widthPt == other.widthPt &&
+            heightPt == other.heightPt &&
+            title == other.title &&
+            text == other.text &&
+            fillColor == other.fillColor &&
+            strokeColor == other.strokeColor &&
+            strokeWidthPt == other.strokeWidthPt &&
+            textColor == other.textColor &&
+            chartTitleTextColor == other.chartTitleTextColor &&
+            chartXAxisTextColor == other.chartXAxisTextColor &&
+            chartYAxisTextColor == other.chartYAxisTextColor &&
+            chartLegendTextColor == other.chartLegendTextColor &&
+            rotationDeg == other.rotationDeg &&
+            (imageBytes contentEquals other.imageBytes) &&
+            chartLabels == other.chartLabels &&
+            chartValues == other.chartValues &&
+            chartSeries == other.chartSeries &&
+            sourceRangeText == other.sourceRangeText &&
+            chartXColIndex == other.chartXColIndex &&
+            chartYColIndices == other.chartYColIndices &&
+            selectedSubElement == other.selectedSubElement &&
+            xAxisLabelInterval == other.xAxisLabelInterval &&
+            xAxisMajorStep == other.xAxisMajorStep &&
+            xAxisMin == other.xAxisMin &&
+            xAxisMax == other.xAxisMax &&
+            yAxisMajorStep == other.yAxisMajorStep &&
+            yAxisMin == other.yAxisMin &&
+            yAxisMax == other.yAxisMax
+    }
+
+    override fun hashCode(): Int {
+        var result = id.hashCode()
+        result = 31 * result + sheetIndex
+        result = 31 * result + kind.hashCode()
+        result = 31 * result + subType.hashCode()
+        result = 31 * result + xPt.hashCode()
+        result = 31 * result + yPt.hashCode()
+        result = 31 * result + widthPt.hashCode()
+        result = 31 * result + heightPt.hashCode()
+        result = 31 * result + title.hashCode()
+        result = 31 * result + text.hashCode()
+        result = 31 * result + fillColor
+        result = 31 * result + strokeColor
+        result = 31 * result + strokeWidthPt.hashCode()
+        result = 31 * result + textColor
+        result = 31 * result + chartTitleTextColor
+        result = 31 * result + chartXAxisTextColor
+        result = 31 * result + chartYAxisTextColor
+        result = 31 * result + chartLegendTextColor
+        result = 31 * result + rotationDeg.hashCode()
+        result = 31 * result + (imageBytes?.contentHashCode() ?: 0)
+        result = 31 * result + chartLabels.hashCode()
+        result = 31 * result + chartValues.hashCode()
+        result = 31 * result + chartSeries.hashCode()
+        result = 31 * result + sourceRangeText.hashCode()
+        result = 31 * result + chartXColIndex
+        result = 31 * result + chartYColIndices.hashCode()
+        result = 31 * result + selectedSubElement.hashCode()
+        result = 31 * result + xAxisLabelInterval
+        result = 31 * result + (xAxisMajorStep?.hashCode() ?: 0)
+        result = 31 * result + (xAxisMin?.hashCode() ?: 0)
+        result = 31 * result + (xAxisMax?.hashCode() ?: 0)
+        result = 31 * result + (yAxisMajorStep?.hashCode() ?: 0)
+        result = 31 * result + (yAxisMin?.hashCode() ?: 0)
+        result = 31 * result + (yAxisMax?.hashCode() ?: 0)
+        return result
+    }
+}
 
 /**
  * [EN] Metadata of an existing spreadsheet file discovered in the currently selected save/open folder.

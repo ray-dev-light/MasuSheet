@@ -13,8 +13,54 @@ import android.view.MotionEvent
 import android.view.View.MeasureSpec
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.masusheet.app.ai.MacroDefinition
+import com.masusheet.app.ai.MacroStudioEngine
+import com.masusheet.app.ai.SpreadsheetAiAgent
+import com.masusheet.app.bridge.InMemoryFallbackEngineGateway
+import com.masusheet.app.bridge.RustJniEngineGateway
+import com.masusheet.app.canvas.MasuSheetNativeSheetContainer
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.CustomCellStyleOverride
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.OpenWorkbookSession
+import com.masusheet.app.model.PivotAggFunction
+import com.masusheet.app.model.PivotTableDefinition
+import com.masusheet.app.model.PivotValueFieldSpec
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.storage.ContentResolverDocumentGateway
+import com.masusheet.app.storage.DocumentIoGateway
 import com.masusheet.app.storage.InMemorySecretStore
+import com.masusheet.app.storage.MasuSheetClipboardImageProvider
+import com.masusheet.app.storage.MasuSheetPreferencesRepository
+import com.masusheet.app.storage.PreferenceStore
+import com.masusheet.app.storage.SecretStore
 import com.masusheet.app.storage.WindowHandoffManager
+import com.masusheet.app.viewmodel.MasuSheetViewModel
+import com.masusheet.app.viewmodel.onAddSheet
+import com.masusheet.app.viewmodel.onAutoFillRange
+import com.masusheet.app.viewmodel.onCompletePendingSave
+import com.masusheet.app.viewmodel.onCreateNewBlankWorkbookSession
+import com.masusheet.app.viewmodel.onCreatePivotTable
+import com.masusheet.app.viewmodel.onDragFreezePaneBoundary
+import com.masusheet.app.viewmodel.onExecuteConfirmedAiPlan
+import com.masusheet.app.viewmodel.onHideSelectedRows
+import com.masusheet.app.viewmodel.onHideSheetAt
+import com.masusheet.app.viewmodel.onInsertChart
+import com.masusheet.app.viewmodel.onInsertShape
+import com.masusheet.app.viewmodel.onOpenDocumentUri
+import com.masusheet.app.viewmodel.onPasteScreenshotOrLatestImage
+import com.masusheet.app.viewmodel.onRefreshPivotTable
+import com.masusheet.app.viewmodel.onRollbackLastMacroRun
+import com.masusheet.app.viewmodel.onRunMacro
+import com.masusheet.app.viewmodel.onSelectAiEditMode
+import com.masusheet.app.viewmodel.onSelectSheetObject
+import com.masusheet.app.viewmodel.onSendAiPrompt
+import com.masusheet.app.viewmodel.onSwitchOpenWorkbook
+import com.masusheet.app.viewmodel.onToggleToolbar
+import com.masusheet.app.viewmodel.onTriggerSave
+import com.masusheet.app.viewmodel.onUpdateChartAxisFormat
+import com.masusheet.app.viewmodel.onUpdateSheetObjectText
+import java.io.File
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -28,7 +74,6 @@ import org.robolectric.Robolectric
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import java.io.File
 
 /**
  * ============================================================================
@@ -903,5 +948,241 @@ class MasuSheetSecurityAndRegressionTest {
 
         vm.onToggleToolbar()
         assertTrue("Ribbon must reappear when toggled back on", vm.uiState.value.toolbarVisible)
+    }
+
+    @Test
+    fun phase2And3A_crossSheetPivotRefreshReadsRemoteRustSheetCells() {
+        val repo = MasuSheetPreferencesRepository(FakePreferenceStore(), InMemorySecretStore())
+        val vm = MasuSheetViewModel(
+            preferencesRepository = repo,
+            documentGateway = FakeDocumentIoGateway(),
+            engineGateway = RustJniEngineGateway(),
+            startWithBlankWorkbook = true
+        )
+        // Populate source table on Sheet 0 (A1:B3)
+        vm.onCommitCellEdit(0, 0, "Category")
+        vm.onCommitCellEdit(0, 1, "Amount")
+        vm.onCommitCellEdit(1, 0, "Books")
+        vm.onCommitCellEdit(1, 1, "100")
+        vm.onCommitCellEdit(2, 0, "Books")
+        vm.onCommitCellEdit(2, 1, "250")
+
+        // Create PivotTable on a NEW sheet (Sheet 1)
+        val created = vm.onCreatePivotTable(sourceRangeText = "A1:B3", placeOnNewSheet = true)
+        assertNotNull("PivotTable on new sheet must be created", created)
+        assertEquals(1, vm.uiState.value.viewport.sheetIndex)
+
+        // Switch back to Sheet 0 and update B3 from 250 -> 900
+        vm.onSelectSheet(0)
+        vm.onCommitCellEdit(2, 1, "900")
+        assertEquals("900", vm.engineGateway.readSheetCells(0)[0L.shl(32) or 0L]?.let { vm.uiState.value.viewport.cellAt(2, 1)?.displayText })
+
+        // Verify RustJniEngineGateway.readSheetCells(0) works even while active sheet is Sheet 1
+        vm.onSelectSheet(1)
+        val remoteSheet0 = vm.engineGateway.readSheetCells(0)
+        val keyB3 = (2L shl 32) or (1L and 0xFFFFFFFFL)
+        assertEquals("900", remoteSheet0[keyB3]?.displayText)
+
+        // Refresh PivotTable from Sheet 1; aggregated Books total must become 100 + 900 = 1000 ("¥1,000" or "1,000")
+        vm.onRefreshPivotTable(created!!.id)
+        val sheet1Texts = vm.uiState.value.viewport.cells.values.map { it.displayText }
+        assertTrue(
+            "Refreshed cross-sheet PivotTable must include updated sum 1000 (got $sheet1Texts)",
+            sheet1Texts.any { it.replace("¥", "").replace("$", "").replace(",", "").trim() == "1000" }
+        )
+    }
+
+    @Test
+    fun phase3A_macroVbaLoopExtremeIntBoundsAndCommandAllowlistGuard() {
+        // Step -2147483648 (Int.MIN_VALUE) must not overflow abs() or hang; emits ["i = 5", "Range(\"A5\").Value = \"ok\""]
+        val minStepCode = """
+            Sub ExtremeNegativeStep()
+                For i = 5 To 1 Step -2147483648
+                    Range("A" & i).Value = "ok"
+                Next i
+            End Sub
+        """.trimIndent()
+        val expandedMinStep = MacroStudioEngine.expandVbaStatements(minStepCode)
+        assertEquals(2, expandedMinStep.size)
+        assertEquals("i = 5", expandedMinStep[0])
+        assertTrue(expandedMinStep[1].contains("A5"))
+
+        // Near Int.MAX_VALUE upper bound must preserve exact 32-bit values and terminate cleanly without wraparound
+        val maxBoundCode = """
+            Sub ExtremeUpperBound()
+                For i = 2147483646 To 2147483647
+                    Cells(1, 1).Value = i
+                Next i
+            End Sub
+        """.trimIndent()
+        val expandedMax = MacroStudioEngine.expandVbaStatements(maxBoundCode)
+        assertEquals(4, expandedMax.size)
+        assertEquals("i = 2147483646", expandedMax[0])
+        assertEquals("i = 2147483647", expandedMax[2])
+
+        // Destructive commands via Application.Run must be blocked by SpreadsheetAiAgent.isAllowedAiCommand
+        val vm = createTestViewModel(blank = true)
+        vm.onCommitCellEdit(0, 0, "KeepMe")
+        vm.onAddSheet()
+        assertEquals(2, vm.uiState.value.viewport.sheetNames.size)
+        val maliciousMacro = MacroDefinition(
+            name = "TryDeleteSheet",
+            vbaCode = """
+                Sub TryDeleteSheet()
+                    Application.Run "home.deleteSheet"
+                    Application.Run "file.new"
+                End Sub
+            """.trimIndent()
+        )
+        vm.onRunMacro(maliciousMacro)
+        assertEquals("Destructive Application.Run must not delete sheets", 2, vm.uiState.value.viewport.sheetNames.size)
+        vm.onSelectSheet(0)
+        assertEquals("Destructive Application.Run must not wipe workbook", "KeepMe", vm.uiState.value.viewport.cellAt(0, 0)?.displayText)
+    }
+
+    @Test
+    fun phase3A_aiPlanModeConfirmationAndBalancedJsonExtractionAndBlockedDestructiveCommands() {
+        // 1. Prose containing {braces} before actual JSON block must still parse cleanly
+        val prosePlusJson = """
+            Here is an example notation {row: 1} before the real payload:
+            {"reply":"Updated A1","bullets":["Set A1 to 42"],"commands":[{"cmd":"cell.set","params":{"cell":"A1","input":"42"}},{"cmd":"home.deleteSheet","params":{}}]}
+        """.trimIndent()
+        val parsed = SpreadsheetAiAgent.parseJsonAiTurnResult(prosePlusJson, "allow_edit")
+        assertNotNull(parsed)
+        assertEquals("Updated A1", parsed!!.replyText)
+        assertEquals("home.deleteSheet must be filtered out", 1, parsed.commands.size)
+        assertEquals("cell.set", parsed.commands.single().first)
+
+        // 2. In "plan" mode, pasting raw JSON commands must stage activeAiPlanSession WITHOUT mutating cells until confirmed
+        val vm = createTestViewModel(blank = true)
+        vm.onCommitCellEdit(0, 0, "Original")
+        vm.onSelectAiEditMode("plan")
+        vm.onSendAiPrompt("""{"reply":"Plan preview","commands":[{"cmd":"cell.set","params":{"cell":"A1","input":"PlannedValue"}}]}""")
+        assertEquals("Plan mode must NOT mutate A1 before confirmation", "Original", vm.uiState.value.viewport.cellAt(0, 0)?.displayText)
+        assertNotNull("Plan mode must create an activeAiPlanSession confirmation prompt", vm.uiState.value.activeAiPlanSession)
+
+        // Confirm execution (option 0 = execute)
+        vm.onExecuteConfirmedAiPlan()
+        assertNull(vm.uiState.value.activeAiPlanSession)
+        assertEquals("Confirmed plan must apply A1 edit", "PlannedValue", vm.uiState.value.viewport.cellAt(0, 0)?.displayText)
+
+        // 3. In "chat" mode, pasting JSON commands must execute 0 commands
+        vm.onSelectAiEditMode("chat")
+        vm.onSendAiPrompt("""{"reply":"Chat explanation","commands":[{"cmd":"cell.set","params":{"cell":"A1","input":"ShouldNotApply"}}]}""")
+        assertEquals("Chat mode must never mutate cells", "PlannedValue", vm.uiState.value.viewport.cellAt(0, 0)?.displayText)
+    }
+
+    @Test
+    fun phase3A_externalFileSchemeIntentRejectedAndDocumentGatewaySanitizesTraversal() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val secretCsv = File(ctx.cacheDir, "secret_local.csv").apply {
+            writeText("TopSecretToken,9999\n")
+        }
+        try {
+            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                component = ComponentName(ctx, MainActivity::class.java)
+                data = android.net.Uri.fromFile(secretCsv)
+            }
+            val controller = Robolectric.buildActivity(MainActivity::class.java, viewIntent).create().start().resume()
+            val activity = controller.get()
+            Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            val vm = activity.activeViewModelForTest
+            assertNotNull(vm)
+            val allTexts = vm.uiState.value.viewport.cells.values.map { it.displayText }
+            assertFalse("External file:// ACTION_VIEW URI must be ignored", allTexts.any { it.contains("TopSecretToken") })
+            controller.pause().stop().destroy()
+        } finally {
+            secretCsv.delete()
+        }
+
+        // Verify ContentResolverDocumentGateway.saveFileInFolder strips "../" traversal components
+        val gw = ContentResolverDocumentGateway(ctx)
+        val targetFolder = File(ctx.cacheDir, "safe_export_folder").apply { mkdirs() }
+        val escapedSibling = File(ctx.cacheDir, "escaped_outside.xlsx").apply { delete() }
+        try {
+            val savedPath = gw.saveFileInFolder(
+                folderPath = targetFolder.absolutePath,
+                fileName = "../../escaped_outside.xlsx",
+                mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                bytes = byteArrayOf(1, 2, 3, 4)
+            )
+            assertFalse("Escaped file outside target folder must NEVER be created", escapedSibling.exists())
+            if (savedPath != null && !savedPath.startsWith("content://")) {
+                val resolvedFile = if (savedPath.startsWith("file://")) {
+                    File(java.net.URI.create(savedPath))
+                } else {
+                    File(savedPath)
+                }
+                assertEquals(targetFolder.canonicalFile, resolvedFile.canonicalFile.parentFile)
+            }
+        } finally {
+            escapedSibling.delete()
+            targetFolder.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun phase3A_clipboardImageProviderRequiresExplicitCapabilityTokenAndBlocksLatestFallback() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val provider = MasuSheetClipboardImageProvider()
+        val info = android.content.pm.ProviderInfo().apply {
+            authority = "${ctx.packageName}.clipboard"
+            exported = false
+            grantUriPermissions = true
+        }
+        provider.attachInfo(ctx, info)
+
+        val pngBytes = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+        val validUri = MasuSheetClipboardImageProvider.writeClipboardImageAndBuildUri(ctx, pngBytes, "chart.png")
+
+        // Valid token URI succeeds in read-only mode
+        val pfd = provider.openFile(validUri, "r")
+        assertNotNull(pfd)
+        pfd?.close()
+
+        // Write mode must throw SecurityException
+        var writeBlocked = false
+        try {
+            provider.openFile(validUri, "w")?.close()
+        } catch (_: SecurityException) {
+            writeBlocked = true
+        }
+        assertTrue("Write mode on MasuSheetClipboardImageProvider must throw SecurityException", writeBlocked)
+
+        // Tokenless URI must NOT fall back to returning the latest copied image
+        val tokenlessUri = android.net.Uri.parse("content://${ctx.packageName}.clipboard/chart.png")
+        var tokenlessRejected = false
+        try {
+            provider.openFile(tokenlessUri, "r")?.close()
+        } catch (_: java.io.FileNotFoundException) {
+            tokenlessRejected = true
+        }
+        assertTrue("Tokenless clipboard URI must be rejected without leaking latest image", tokenlessRejected)
+    }
+
+    @Test
+    fun phase1And3A_immutableByteArrayStructuralEqualityAndBundledLicenseAssetsExist() {
+        val a = NativeSheetObject(id = "img1", kind = SheetObjectKind.IMAGE, imageBytes = byteArrayOf(1, 2, 3))
+        val b = NativeSheetObject(id = "img1", kind = SheetObjectKind.IMAGE, imageBytes = byteArrayOf(1, 2, 3))
+        val c = NativeSheetObject(id = "img1", kind = SheetObjectKind.IMAGE, imageBytes = byteArrayOf(1, 2, 9))
+        assertEquals(a, b)
+        assertEquals(a.hashCode(), b.hashCode())
+        assertNotEquals(a, c)
+
+        val s1 = OpenWorkbookSession(id = "wb1", title = "Book1.xlsx", sampleKind = "blank", savedWorkbookBytes = byteArrayOf(10, 20))
+        val s2 = OpenWorkbookSession(id = "wb1", title = "Book1.xlsx", sampleKind = "blank", savedWorkbookBytes = byteArrayOf(10, 20))
+        val s3 = OpenWorkbookSession(id = "wb1", title = "Book1.xlsx", sampleKind = "blank", savedWorkbookBytes = byteArrayOf(10, 99))
+        assertEquals(s1, s2)
+        assertEquals(s1.hashCode(), s2.hashCode())
+        assertNotEquals(s1, s3)
+
+        // Verify all 4 offline OSS license texts are bundled in app/src/main/assets/licenses/
+        val assetsDir = File("src/main/assets/licenses").let {
+            if (it.isDirectory) it else File("app/src/main/assets/licenses")
+        }
+        for (fileName in listOf("LICENSE-APACHE.txt", "LICENSE-MIT.txt", "NOTICE.txt", "THIRD_PARTY_LICENSES.txt")) {
+            val f = File(assetsDir, fileName)
+            assertTrue("Bundled license asset $fileName must exist", f.isFile && f.length() > 100L)
+        }
     }
 }

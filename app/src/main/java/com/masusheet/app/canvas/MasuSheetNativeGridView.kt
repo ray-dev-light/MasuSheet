@@ -1,36 +1,14 @@
-package com.masusheet.app
+package com.masusheet.app.canvas
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Build
-import android.os.Bundle
-import android.text.Editable
-import android.text.InputType
-import android.text.Spannable
-import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
-import android.util.TypedValue
 import android.view.GestureDetector
-import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
@@ -38,102 +16,27 @@ import android.view.ScaleGestureDetector
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
-import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputConnectionWrapper
-import android.view.inputmethod.InputContentInfo
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
-import android.widget.LinearLayout
 import android.widget.OverScroller
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContract
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerHoverIcon
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
+import com.masusheet.app.core.SpreadsheetI18n
+import com.masusheet.app.model.ChartSeries
+import com.masusheet.app.model.GridLayerCacheKey
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.viewmodel.MasuSheetViewModel
+import com.masusheet.app.viewmodel.getActiveCellValidation
+import com.masusheet.app.viewmodel.onSetZoomPercent
+import com.masusheet.app.viewmodel.resolveChartSeriesAxisBounds
 import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
@@ -675,7 +578,8 @@ class MasuSheetNativeGridView(
     }
 
     /**
-     * A10: Hit-tests the Data Validation `[▾]` dropdown button on the right edge of the active cell.
+     * [EN] Hit-tests whether `(screenX, screenY)` falls on the `[▾]` list-validation dropdown badge of the active cell.
+     * [JA] 画面座標 `(screenX, screenY)` がアクティブセル右端の入力規則リスト `[▾]` ドロップダウンバッジ上にあるかを判定します。
      */
     fun isPointOnValidationDropdownBadge(screenX: Float, screenY: Float): Boolean {
         val valModel = viewModel.getActiveCellValidation() ?: return false
@@ -691,7 +595,8 @@ class MasuSheetNativeGridView(
     }
 
     /**
-     * A11: Hit-tests the horizontal Freeze Pane divider line (`Drag::Freeze`, `interact.rs:371-375`).
+     * [EN] Returns `true` when `(screenX, screenY)` is within drag tolerance of the horizontal freeze-pane divider line.
+     * [JA] 画面座標 `(screenX, screenY)` が水平方向のウィンドウ枠固定ラインのドラッグ判定幅内にあるかを返します。
      */
     fun findFreezeRowDividerAt(screenX: Float, screenY: Float): Boolean {
         val snap = currentViewport
@@ -701,7 +606,8 @@ class MasuSheetNativeGridView(
     }
 
     /**
-     * A11: Hit-tests the vertical Freeze Pane divider line (`Drag::Freeze`, `interact.rs:371-375`).
+     * [EN] Returns `true` when `(screenX, screenY)` is within drag tolerance of the vertical freeze-pane divider line.
+     * [JA] 画面座標 `(screenX, screenY)` が垂直方向のウィンドウ枠固定ラインのドラッグ判定幅内にあるかを返します。
      */
     fun findFreezeColDividerAt(screenX: Float, screenY: Float): Boolean {
         val snap = currentViewport
@@ -775,10 +681,8 @@ class MasuSheetNativeGridView(
     }
 
     /**
-     * Hit-tests sheet objects on the current sheet in reverse draw order (topmost first).
-     * Inverse-rotates `(screenX, screenY)` by `-obj.rotationDeg` around the object center so the
-     * top rotation handle (`⟳`), all 8 resize handles (4 corners + Top/Bottom vertical + Left/Right horizontal),
-     * and body hit-test accurately at any angle!
+     * [EN] Hit-tests floating objects on the active sheet in top-down z-order, inverse-rotating `(screenX, screenY)` so rotation and 8 resize handles work at any angle.
+     * [JA] 現在のシート上のオブジェクトを前面順かつ回転角の逆変換付きでヒットテストし、回転ノブ・8方向リサイズハンドル・本体のどこに触れたかを返します。
      */
     fun findSheetObjectAt(screenX: Float, screenY: Float): Pair<NativeSheetObject, SheetObjectHitPart>? {
         if (screenX < 0f || screenY < 0f) return null
@@ -1110,10 +1014,8 @@ class MasuSheetNativeGridView(
     }
 
     /**
-     * Hit-tests interactive sub-elements inside a Chart (`"xAxis"`, `"yAxis"`, `"series:0"`, `"series:1"`, ...).
-     * - Clicking the X-Axis label strip selects `"xAxis"` (entire X-Axis).
-     * - Clicking the Y-Axis label strip selects `"yAxis"` (entire Y-Axis).
-     * - Clicking a series line, data point, bar, or legend item selects `"series:<idx>"`.
+     * [EN] Hit-tests interactive chart sub-elements (`"xAxis"`, `"yAxis"`, or `"series:<idx>"`) under `(screenX, screenY)`.
+     * [JA] グラフ内のインタラクティブ要素（X軸 `"xAxis"`、Y軸 `"yAxis"`、または各データ系列 `"series:<idx>"`）を画面座標から判定します。
      */
     fun hitTestChartInteractiveElement(
         obj: NativeSheetObject,
@@ -1287,11 +1189,7 @@ class MasuSheetNativeGridView(
         return ""
     }
 
-    /**
-     * Returns the column index `c` if `(screenX, screenY)` is on the right boundary between column `c` and `c + 1`
-     * inside the Column Header Bar (`A, B, C, D...`), or `-1` otherwise.
-     */
-    /**
+        /**
      * [EN] Hit-tests column header boundaries (`colOffsets[c + 1]`) AND the blank gap between column letters
      * when a column is expanded (`colW > 96pt`), allowing one-click reset to standard width (`64pt`).
      *
@@ -1470,8 +1368,10 @@ class MasuSheetNativeGridView(
         }
 
         var bmp = cachedLayerBitmap
-        if (bmp == null || bmp.width != w || bmp.height != h) {
-            bmp?.recycle()
+        if (bmp == null || bmp.isRecycled || bmp.width != w || bmp.height != h) {
+            if (bmp != null && !bmp.isRecycled) {
+                bmp.recycle()
+            }
             bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             cachedLayerBitmap = bmp
             cachedLayerCanvas = Canvas(bmp)
@@ -1492,6 +1392,19 @@ class MasuSheetNativeGridView(
         // 2. Render Lightweight Layer 2 Overlay (Selection Box, Sheet Objects, Headers, Resize Indicators, Scrollbars)
         renderSelectionAndHeadersOverlay(canvas, w, h)
         layer2OverlayRenderCount++
+    }
+
+    override fun onDetachedFromWindow() {
+        velocityTracker?.recycle()
+        velocityTracker = null
+        cachedLayerCanvas = null
+        cachedLayerBitmap?.let { bmp ->
+            if (!bmp.isRecycled) bmp.recycle()
+        }
+        cachedLayerBitmap = null
+        cachedLayerKey = null
+        imageBitmapCache.evictAll()
+        super.onDetachedFromWindow()
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean =

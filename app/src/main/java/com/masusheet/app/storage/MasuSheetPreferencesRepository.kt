@@ -1,23 +1,7 @@
-package com.masusheet.app
+package com.masusheet.app.storage
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.util.Base64
-import kotlin.math.roundToInt
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.viewmodel.getAiCustomEndpoint
 
 /**
  * ============================================================================

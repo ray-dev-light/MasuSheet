@@ -23,7 +23,7 @@
   - **10カテゴリ×32種類のグラフ**: 縦棒・折れ線・円／ドーナツ・横棒・面・散布図・株価・レーダー・複合・ウォーターフォールに対応。シート上での X軸／Y軸データ範囲ドラッグ変更、要素別（全体・タイトル・縦軸・横軸・凡例）の文字色設定、軸の最小値・最大値・目盛間隔設定を備え、作成したグラフ・画像・図形を `.xlsx` ファイルへ保存・再読み込みできます（Excel互換の標準OOXMLグラフ＋MasuSheet詳細設定の両対応）。
   - **画像＆図形編集**: 枠線なしのクリーンな画像貼り付け、`inSampleSize` 縮小デコード＋`LruCache` による省メモリ描画、四隅のアスペクト比維持リサイズ、辺中央の単軸リサイズ、`Shift+クリック` 複数選択と整列、矢印キー `1pt` 微調整、複数オブジェクトの統合 PNG コピーに対応。
 - **ピボットテーブル＆テーブルオートフィルタ**: 新規シートまたは既存シートへのピボットテーブル作成、行・列・値（11種の集計関数）・フィルタ配置、小計・総計、デザインプリセット、別シート元表からの再集計に対応。
-- **マクロ＆VBAスタジオ**: 操作記録、`For..Next` ループや `&` 文字列連結を含む VBA コード編集、1行ずつのステップ実行デバッガ、統合 Undo スナップショットによる安全なロールバックを搭載。
+- **マクロスタジオ（VBA風構文対応）**: 操作記録、`For..Next` ループや `&` 文字列連結を含む VBA 風マクロコード編集、1行ずつのステップ実行デバッガ、統合 Undo スナップショットによる安全なロールバックを搭載。
 - **3モード対応 AI スプレッドシート編集パネル**:
   1. **内蔵スマートスクリプト**: API キー不要・オフラインで動く定型集計・表作成・装飾機能。
   2. **外部 Web AI 連携**: シート構造と専用 JSON 仕様をコピーし、普段お使いの Web AI の出力 JSON を貼り付けて一括反映。
@@ -75,9 +75,7 @@ MasuSheet/
 
 ### Rust 計算コア＆JNI テスト
 ```bash
-cargo test -p gridcraft-core -p gridcraft-numfmt -p gridcraft-formula \
-  -p gridcraft-functions -p gridcraft-model -p gridcraft-calc \
-  -p gridcraft-xlsx -p gridcraft-chart -p gridcraft-engine -p masusheet-jni
+cargo test --workspace
 ```
 
 ### Android 単体テスト・Lint・デバッグ APK ビルド
@@ -105,4 +103,6 @@ MasuSheet は以下のデュアルライセンスのもとで提供されます�
 - **Apache License, Version 2.0** ([LICENSE-APACHE](./LICENSE-APACHE))
 - **MIT License** ([LICENSE-MIT](./LICENSE-MIT))
 
-本プロジェクトの Rust 計算エンジンクレート群（`crates/*`）は、**ArtCraft** によるオープンソースプロジェクト **GridCraft** をベースに構築されています。MasuSheet は独立したオープンソースプロジェクトであり、ArtCraft による公式製品・提携プロジェクトではありません。詳細な著作権表示および改変履歴については [NOTICE](./NOTICE) および [ATTRIBUTION.md](./ATTRIBUTION.md) をご参照ください。
+本プロジェクトの Rust 計算エンジンクレート群（`crates/*`）は、**ArtCraft** によるオープンソースプロジェクト **GridCraft** をベースに構築されています。MasuSheet は独立したオープンソースプロジェクトであり、ArtCraft による公式製品・提携プロジェクトではありません。各種オープンソースライセンス全文および著作権表示はアプリ内（`ファイル` タブ → `📜 OSSライセンス・このアプリについて`）に同梱されているほか、[NOTICE](./NOTICE) および [ATTRIBUTION.md](./ATTRIBUTION.md) でもご確認いただけます。
+
+> **商標について**: Microsoft、Excel、Visual Basic は米国 Microsoft Corporation の商標または登録商標です。Google、Android、Google スプレッドシートは Google LLC の商標です。その他記載されている会社名・製品名は各社の商標または登録商標であり、本ドキュメントおよびアプリ内ではファイル形式（`.xlsx` / ECMA-376 OOXML）や構文の互換性説明の目的にのみ言及しています。MasuSheet は Microsoft Corporation および Google LLC と提携・承認関係にはありません。

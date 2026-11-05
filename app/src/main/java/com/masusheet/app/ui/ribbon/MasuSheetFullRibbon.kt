@@ -1,69 +1,11 @@
-package com.masusheet.app
+package com.masusheet.app.ui.ribbon
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.RectF
-import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
-import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.text.Editable
-import android.text.InputType
-import android.text.Spannable
-import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
-import android.util.TypedValue
-import android.view.GestureDetector
-import android.view.Gravity
-import android.view.KeyEvent
-import android.view.MotionEvent
-import android.view.PointerIcon
-import android.view.VelocityTracker
 import android.view.View
-import android.view.ViewConfiguration
-import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputConnectionWrapper
-import android.view.inputmethod.InputContentInfo
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
-import android.widget.LinearLayout
-import android.widget.OverScroller
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContract
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -71,7 +13,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -79,26 +20,13 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -107,41 +35,29 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import kotlin.math.PI
+import com.masusheet.app.R
+import com.masusheet.app.SecondaryWorkbookActivity
+import com.masusheet.app.catalog.SpreadsheetChartTypeCatalog
+import com.masusheet.app.core.InlineCheckboxHelper
+import com.masusheet.app.core.SpreadsheetI18n
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.ui.RIBBON_TABS
+import com.masusheet.app.viewmodel.onToggleAiPanel
 import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /**
  * ============================================================================
@@ -640,7 +556,7 @@ fun MasuSheetFullRibbon(
             }
         }
 
-        // Row 3: Authentic Office 365 / Windows 11 Spreadsheet Grouped Multi-Row Ribbon Card (heightIn(min = 82.dp) — Zero vertical clipping!)
+        // Row 3: Classic Grouped Multi-Row Ribbon Card (heightIn(min = 82.dp) — Zero vertical clipping!)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -702,6 +618,7 @@ fun MasuSheetFullRibbon(
                             SpreadsheetRibbonGroup(title = "保護・シート") {
                                 SpreadsheetRibbonCheckbox("🔒 ブックの保護", checked = state.isWorkbookProtected, onClick = { onCommand("file.protectWorkbook", "{}") })
                                 SpreadsheetTallRibbonButton("➕", "➕ 新しいシートを追加", onClick = onAddSheetClick)
+                                SpreadsheetTallRibbonButton("📜", "📜 OSSライセンス・このアプリについて", onClick = { onCommand("app.aboutLicenses", "{}") })
                             }
                         }
 
@@ -1021,7 +938,7 @@ fun MasuSheetFullRibbon(
 
                         "pageLayout" -> {
                             SpreadsheetRibbonGroup(title = "テーマ") {
-                                SpreadsheetTallRibbonButton("🎨", "🎨 テーマ配色変更 (Office / 緑 / 青 / 暖色)", onClick = { onOpenColorPicker("fill") })
+                                SpreadsheetTallRibbonButton("🎨", "🎨 テーマ配色変更 (標準 / 緑 / 青 / 暖色)", onClick = { onOpenColorPicker("fill") })
                             }
                             SpreadsheetRibbonGroupDivider()
                             SpreadsheetRibbonGroup(title = "ページ設定") {
@@ -1489,7 +1406,7 @@ fun MasuSheetFullRibbon(
                         }
 
                         else -> {
-                            // Default: Authentic Office 365 / Windows 11 Spreadsheet "Home" Ribbon (matching ArtCraft / Spreadsheet 100%)
+                            // Default: "Home" Tab Grouped Multi-Row Ribbon
                             val activeCellIsWrap = activeCell?.isWrap == true
                             val activeCellAlignKey = state.viewport.sheetIndex to NativeViewportSnapshot.packCellKey(state.viewport.activeRow, state.viewport.activeCol)
                             val hasAllBorders = activeCell != null &&

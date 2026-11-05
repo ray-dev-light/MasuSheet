@@ -1,30 +1,12 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import org.json.JSONArray
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.FindMatchItem
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeCellModel
+import com.masusheet.app.model.NativeViewportSnapshot
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.Base64
-import kotlin.math.abs
-import kotlin.math.roundToInt
-import com.masusheet.app.MasuSheetViewModel.*
 
 /**
  * ============================================================================
@@ -38,8 +20,8 @@ import com.masusheet.app.MasuSheetViewModel.*
  */
 
 /**
- * [EN] ViewModel action/helper `shiftSheetIndexedStateOnInsert` handling shift sheet indexed state on insert while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `shiftSheetIndexedStateOnInsert` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Shifts all sheet-indexed maps, objects, PivotTables, filters, and sparklines at or after `insertedAt` up by `+1` when a worksheet is inserted.
+ * [JA] シート挿入位置 `insertedAt` 以降に紐づくカスタム列幅・行高・書式・オブジェクト・ピボット・フィルター等のシート番号を `+1` シフトします。
  */
 internal fun MasuSheetViewModel.shiftSheetIndexedStateOnInsert(insertedAt: Int) {
     val cur = _uiState.value
@@ -99,8 +81,8 @@ internal fun MasuSheetViewModel.shiftSheetIndexedStateOnInsert(insertedAt: Int) 
 }
 
 /**
- * [EN] ViewModel action/helper `shiftSheetIndexedStateOnDelete` handling shift sheet indexed state on delete while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `shiftSheetIndexedStateOnDelete` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Drops state belonging to `deletedAt` and decrements all sheet-indexed state above `deletedAt` by `-1` when a worksheet is deleted.
+ * [JA] 削除されたシート `deletedAt` の付属状態を破棄し、それより後ろのシート番号を持つ全状態を `-1` シフトします。
  */
 internal fun MasuSheetViewModel.shiftSheetIndexedStateOnDelete(deletedAt: Int) {
     val cur = _uiState.value
@@ -167,8 +149,8 @@ internal fun MasuSheetViewModel.shiftSheetIndexedStateOnDelete(deletedAt: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onAddSheet` handling add sheet while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onAddSheet` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Appends a new blank worksheet tab at the end of the workbook and switches focus to it.
+ * [JA] ブック末尾に新しい空白ワークシートを追加し、そのシートをアクティブにします。
  */
 fun MasuSheetViewModel.onAddSheet() {
     val sheetCount = _uiState.value.viewport.sheetNames.size.coerceAtLeast(1)
@@ -182,8 +164,8 @@ fun MasuSheetViewModel.onAddSheet() {
 }
 
 /**
- * [EN] ViewModel action/helper `onStepSheet` handling step sheet while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onStepSheet` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Switches to the next (`delta >= 0`) or previous (`delta < 0`) visible worksheet tab.
+ * [JA] 前または次の表示ワークシートタブへ切り替えます。
  */
 fun MasuSheetViewModel.onStepSheet(delta: Int) {
     val cmd = if (delta >= 0) "sheet.next" else "sheet.previous"
@@ -202,8 +184,8 @@ fun MasuSheetViewModel.onStepSheet(delta: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onInsertSheetBefore` handling insert sheet before while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onInsertSheetBefore` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Inserts a new blank worksheet immediately before `sheetIndex` while keeping all sheet-indexed overlays aligned.
+ * [JA] 指定インデックス `sheetIndex` の直前に新しいワークシートを挿入し、各シートの付属状態を整合シフトします。
  */
 fun MasuSheetViewModel.onInsertSheetBefore(sheetIndex: Int) {
     val sheetCount = _uiState.value.viewport.sheetNames.size.coerceAtLeast(1)
@@ -218,8 +200,8 @@ fun MasuSheetViewModel.onInsertSheetBefore(sheetIndex: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onDeleteSheetAt` handling delete sheet at while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDeleteSheetAt` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Deletes worksheet `sheetIndex` (or resets the sole remaining worksheet to a clean `Sheet1` when only one tab exists).
+ * [JA] 指定シート `sheetIndex` を削除します（最後の1枚だった場合は新規空白 `Sheet1` に置き換えて空ブック化を防ぎます）。
  */
 fun MasuSheetViewModel.onDeleteSheetAt(sheetIndex: Int) {
     val names = _uiState.value.viewport.sheetNames
@@ -253,8 +235,8 @@ fun MasuSheetViewModel.onDeleteSheetAt(sheetIndex: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onRenameSheetAt` handling rename sheet at while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onRenameSheetAt` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Renames worksheet `sheetIndex` to `newName` (trimmed, non-empty) and updates any PivotTable referencing its source sheet name.
+ * [JA] ワークシート `sheetIndex` の名前を `newName` に変更し、そのシートを参照するピボット定義の元シート名も同期更新します。
  */
 fun MasuSheetViewModel.onRenameSheetAt(sheetIndex: Int, newName: String) {
     val clean = newName.trim()
@@ -272,8 +254,8 @@ fun MasuSheetViewModel.onRenameSheetAt(sheetIndex: Int, newName: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onDuplicateSheetAt` handling duplicate sheet at while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDuplicateSheetAt` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Clones worksheet `sheetIndex` immediately after itself, copying cells, widths/heights, merges, styles, floating objects, comments, links, and tab color.
+ * [JA] 指定シート `sheetIndex` のセル内容・列幅／行高・結合・カスタム書式・オブジェクト・コメント・リンク・タブ色を丸ごと複製します。
  */
 fun MasuSheetViewModel.onDuplicateSheetAt(sheetIndex: Int) {
     val insertPos = (sheetIndex + 1).coerceIn(0, _uiState.value.viewport.sheetNames.size)
@@ -312,8 +294,8 @@ fun MasuSheetViewModel.onDuplicateSheetAt(sheetIndex: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onHideSheetAt` handling hide sheet at while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onHideSheetAt` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Hides worksheet tab `sheetIndex` via the engine's `sheet.hide` command.
+ * [JA] エンジンの `sheet.hide` コマンドを実行して指定シート `sheetIndex` を非表示にします。
  */
 fun MasuSheetViewModel.onHideSheetAt(sheetIndex: Int) {
     val snap = engineGateway.executeCommand("sheet.hide", "{\"sheet\":$sheetIndex}")
@@ -321,7 +303,8 @@ fun MasuSheetViewModel.onHideSheetAt(sheetIndex: Int) {
 }
 
 /**
- * Moves a worksheet tab from [fromIndex] to [toIndex] and remaps all sheet-indexed state maps.
+ * [EN] Reorders worksheet tab `fromIndex` to `toIndex` and remaps all sheet-indexed custom widths, styles, objects, and PivotTables accordingly.
+ * [JA] ワークシートタブを `fromIndex` から `toIndex` へ並び替え、全シートインデックス付きの状態マップを追従更新します。
  */
 fun MasuSheetViewModel.onMoveSheet(fromIndex: Int, toIndex: Int) {
     val cur = _uiState.value
@@ -408,8 +391,8 @@ fun MasuSheetViewModel.onMoveSheet(fromIndex: Int, toIndex: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `collectSheetFindMatches` handling collect sheet find matches while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `collectSheetFindMatches` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Searches populated cells on the active sheet for `query` (respecting `matchCase` and `wholeCell`) in row-major order.
+ * [JA] アクティブシート上の入力済みセルを行優先で走査し、大文字小文字区別・セル全体一致条件に従って `query` の一致箇所一覧を返します。
  */
 internal fun MasuSheetViewModel.collectSheetFindMatches(
     query: String,
@@ -496,8 +479,8 @@ internal fun MasuSheetViewModel.collectSheetFindMatches(
 }
 
 /**
- * [EN] ViewModel action/helper `onFindAllCells` handling find all cells while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onFindAllCells` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Finds all matching cells for `query` on the active sheet, selects the first hit, and populates `MasuSheetUiState.findMatches`.
+ * [JA] 現在のシート内で `query` に一致する全セルを検索し、最初のヒットセルを選択して検索結果一覧を更新します。
  */
 fun MasuSheetViewModel.onFindAllCells(
     query: String,
@@ -543,8 +526,8 @@ fun MasuSheetViewModel.onFindAllCells(
 }
 
 /**
- * [EN] ViewModel action/helper `onFindNext` handling find next while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onFindNext` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Advances forward or backward (`forward`) through matches for `query` relative to the active cell and selects the matched cell.
+ * [JA] アクティブセルを基準に次または前の一致セルを検索して選択位置を移動します。
  */
 fun MasuSheetViewModel.onFindNext(
     query: String,
@@ -604,8 +587,8 @@ fun MasuSheetViewModel.onFindNext(
 }
 
 /**
- * [EN] ViewModel action/helper `onSelectFindMatch` handling select find match while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSelectFindMatch` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Jumps to `findMatches[index]` (switching worksheets if needed) and highlights that match as active.
+ * [JA] 検索結果一覧の `index` 番目のセルへ（必要に応じシートを切り替えて）ジャンプ選択します。
  */
 fun MasuSheetViewModel.onSelectFindMatch(index: Int) {
     val cur = _uiState.value
@@ -628,8 +611,8 @@ fun MasuSheetViewModel.onSelectFindMatch(index: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `replaceSubstringInCellText` handling replace substring in cell text while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `replaceSubstringInCellText` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Replaces `query` with `replacement` inside `source` according to `matchCase` and `wholeCell` flags.
+ * [JA] `matchCase`（大文字小文字区別）および `wholeCell`（セル全体一致）条件に従ってセル文字列内の `query` を `replacement` に置換します。
  */
 internal fun MasuSheetViewModel.replaceSubstringInCellText(
     source: String,
@@ -646,8 +629,8 @@ internal fun MasuSheetViewModel.replaceSubstringInCellText(
 }
 
 /**
- * [EN] ViewModel action/helper `onReplaceCurrentCell` handling replace current cell while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onReplaceCurrentCell` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Replaces `query` with `replacement` in the active cell (or next matching cell) and advances to the following match.
+ * [JA] 現在のセル（または次の一致セル）の文字列を置換して確定し、次の一致箇所へ移動します。
  */
 fun MasuSheetViewModel.onReplaceCurrentCell(
     query: String,
@@ -708,8 +691,8 @@ fun MasuSheetViewModel.onReplaceCurrentCell(
 }
 
 /**
- * [EN] ViewModel action/helper `onReplaceAllCells` handling replace all cells while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onReplaceAllCells` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Replaces every occurrence of `query` with `replacement` across the active worksheet in one Undoable batch and returns the replaced cell count.
+ * [JA] アクティブシート内のすべての一致セルを一括置換（Undo対応）し、置換したセル件数を返します。
  */
 fun MasuSheetViewModel.onReplaceAllCells(
     query: String,
@@ -770,7 +753,8 @@ fun MasuSheetViewModel.onReplaceAllCells(
 }
 
 /**
- * Navigates to a cell, range, `Sheet!A1:B5`, or defined name (matching Spreadsheet's Go To / F5 and Name Box).
+ * [EN] Navigates to an A1 cell, `A1:D10` range, cross-sheet `Sheet2!B5` reference, or workbook defined name.
+ * [JA] A1セル座標・セル範囲・別シート参照（`Sheet2!B5`）・定義済み名前のいずれかを解決して該当範囲へジャンプします。
  */
 fun MasuSheetViewModel.onGoToReference(reference: String): Boolean {
     val raw = reference.trim()
@@ -938,8 +922,8 @@ fun MasuSheetViewModel.onGoToSpecial(kind: String): Int {
 }
 
 /**
- * B3: Unified Goal Seek (`data.goalSeek`) that invokes the Rust engine's real secant+bisection solver (`whatif.rs`)
- * on dependent formulas first, falling back to linear ratio approximation only if the target cell has no formula dependency.
+ * [EN] Runs Goal Seek (`data.goalSeek`) via the Rust engine's secant/bisection solver (with linear fallback for direct cells) to reach `toValue`.
+ * [JA] 目標値 `toValue` になるよう変数セルを逆算するゴールシーク（Rustエンジンの数値ソルバー優先）を実行します。
  */
 fun MasuSheetViewModel.onRunGoalSeek(setCellRef: String, toValue: Double, byChangingCellRef: String): Boolean {
     val cur = _uiState.value
@@ -1013,9 +997,8 @@ fun MasuSheetViewModel.onRunGoalSeek(setCellRef: String, toValue: Double, byChan
 }
 
 /**
- * B5: Unified Comment, Hyperlink, and Defined Name mutations that sync directly with the Rust engine
- * (`review.newComment`, `review.deleteComment`, `insert.link`, `formulas.defineName`) so `.xlsx` save/load
- * and formula evaluation (`=MyName * 2`) share a single source of truth.
+ * [EN] Sets or removes (`comment.isBlank()`) a note/comment on the active cell in both UI state and the native `.xlsx` engine.
+ * [JA] アクティブセルにコメント（メモ）を設定または空文字指定で削除し、UI表示とネイティブエンジン双方へ同期します。
  */
 fun MasuSheetViewModel.onSetCellComment(comment: String) {
     val cur = _uiState.value
@@ -1053,8 +1036,8 @@ fun MasuSheetViewModel.onSetCellComment(comment: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSetCellHyperlink` handling set cell hyperlink while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSetCellHyperlink` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Attaches or clears (`urlOrRef.isBlank()`) a hyperlink and optional display label on the active cell, syncing with `insert.link`.
+ * [JA] アクティブセルに外部URLまたはシート内参照のハイパーリンクを設定（空文字で解除）し、エンジンへ同期します。
  */
 fun MasuSheetViewModel.onSetCellHyperlink(urlOrRef: String, displayLabel: String = "") {
     val cur = _uiState.value
@@ -1091,8 +1074,8 @@ fun MasuSheetViewModel.onSetCellHyperlink(urlOrRef: String, displayLabel: String
 }
 
 /**
- * [EN] ViewModel action/helper `onDefineName` handling define name while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDefineName` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Registers a workbook-scoped Defined Name (`name` -> `refersTo`) in both the calculation engine (`formulas.defineName`) and `definedNames`.
+ * [JA] ブック共通の定義済み名前（`name` → `refersTo`）を計算エンジンとUI状態の双方に登録します。
  */
 fun MasuSheetViewModel.onDefineName(name: String, refersTo: String) {
     val cleanName = name.trim()
@@ -1120,8 +1103,8 @@ fun MasuSheetViewModel.onDefineName(name: String, refersTo: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `parseSingleCellRef` handling parse single cell ref while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `parseSingleCellRef` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Parses the top-left cell of a cell/range reference (stripping any `Sheet!` prefix and `:B10` range tail) into 0-based `(row, col)`.
+ * [JA] シート名プレフィックスやコロン以降の範囲終端を除いた単一A1セル文字列を 0始まりの `(row, col)` に変換します。
  */
 internal fun MasuSheetViewModel.parseSingleCellRef(ref: String): Pair<Int, Int>? {
     val cleaned = ref.trim().substringAfter('!').substringBefore(':')
@@ -1129,7 +1112,8 @@ internal fun MasuSheetViewModel.parseSingleCellRef(ref: String): Pair<Int, Int>?
 }
 
 /**
- * Navigates to a cell or range typed into the Formula Bar Name Box (e.g., `D18` or `A1:D10`), matching Spreadsheet's Name Box behavior.
+ * [EN] Parses an address, range (`A1:D10`), or defined name entered in the Formula Bar Name Box and selects the target cells.
+ * [JA] 数式バー左の名前ボックスに入力されたセル番地・範囲・定義済み名前を解析し、対象セル範囲へ移動します。
  */
 fun MasuSheetViewModel.onNavigateToAddressOrRange(addressInput: String): Boolean {
     val clean = addressInput.trim().uppercase()

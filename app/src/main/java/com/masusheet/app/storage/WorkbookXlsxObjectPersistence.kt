@@ -1,7 +1,7 @@
 package com.masusheet.app.storage
 
-import com.masusheet.app.OpenWorkbookSession
-import com.masusheet.app.WorkbookHandoffSerializer
+import com.masusheet.app.model.OpenWorkbookSession
+import com.masusheet.app.model.WorkbookHandoffSerializer
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.Base64
@@ -45,6 +45,8 @@ object WorkbookXlsxObjectPersistence {
 
     private const val MAX_ZIP_ENTRIES = 8_192
     private const val MAX_OVERLAY_ENTRY_BYTES = 32 * 1024 * 1024 // 32 MiB safety cap
+    internal const val MAX_SINGLE_ZIP_ENTRY_BYTES = 64 * 1024 * 1024 // 64 MiB per ZIP entry
+    internal const val MAX_TOTAL_UNCOMPRESSED_BYTES = 128L * 1024L * 1024L // 128 MiB total ZIP bomb cap
 
     /**
      * [EN] Returns `true` when [session] holds any floating objects, PivotTables, or custom overlays
@@ -92,6 +94,8 @@ object WorkbookXlsxObjectPersistence {
 
         return runCatching {
             val entries = LinkedHashMap<String, ByteArray>()
+            val chunk = ByteArray(16 * 1024)
+            var totalUncompressed = 0L
             ZipInputStream(ByteArrayInputStream(xlsxBytes)).use { zis ->
                 var count = 0
                 var entry = zis.nextEntry
@@ -103,7 +107,20 @@ object WorkbookXlsxObjectPersistence {
                     if (!entry.isDirectory) {
                         val name = entry.name
                         if (!name.equals(CUSTOM_XML_ENTRY_PATH, ignoreCase = true)) {
-                            entries[name] = zis.readBytes()
+                            val entryBuf = ByteArrayOutputStream()
+                            var entryBytes = 0
+                            while (true) {
+                                val n = zis.read(chunk)
+                                if (n < 0) break
+                                if (n == 0) continue
+                                entryBytes += n
+                                totalUncompressed += n.toLong()
+                                if (entryBytes > MAX_SINGLE_ZIP_ENTRY_BYTES || totalUncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES) {
+                                    return xlsxBytes
+                                }
+                                entryBuf.write(chunk, 0, n)
+                            }
+                            entries[name] = entryBuf.toByteArray()
                         }
                     }
                     zis.closeEntry()

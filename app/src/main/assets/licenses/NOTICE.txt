@@ -1,0 +1,41 @@
+MasuSheet
+Copyright (c) 2026 MasuSheet contributors.
+
+Forked from GridCraft (https://github.com/storytold/gridcraft, commit 55850841d39f030fb42f0a07e54903decea7b067):
+Copyright (c) 2026 ArtCraft Team and the GridCraft contributors.
+
+Licensed under either of:
+  - Apache License, Version 2.0 (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
+  - MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT)
+at your option.
+
+Trademark & Non-Affiliation Notice
+----------------------------------
+- Upstream ArtCraft brand files formerly in docs/brand/ and desktop installer assets have been
+  removed from this repository. MasuSheet is an independent open-source spreadsheet application
+  for Android and is not affiliated with or endorsed by the ArtCraft Team.
+- Android, ChromeOS, and Googlebook are trademarks of Google LLC.
+- Microsoft, Excel, and Visual Basic are trademarks of Microsoft Corporation.
+
+Third-Party Open-Source Material
+--------------------------------
+MasuSheet links or bundles third-party open-source libraries under permissive licenses:
+
+1. Android Jetpack, AndroidX, Jetpack Compose, and Material 3
+   Copyright (c) The Android Open Source Project
+   Licensed under the Apache License, Version 2.0.
+
+2. Kotlin Standard Library & Kotlinx Coroutines
+   Copyright (c) JetBrains s.r.o. and Kotlin Programming Language contributors
+   Licensed under the Apache License, Version 2.0.
+
+3. Rust Calculation Core & JNI Dependencies (`libmasusheet_jni.so`)
+   All linked Rust crates (including `jni`, `serde`, `serde_json`, `chrono`, `quick-xml`, `zip`,
+   `flate2`, `regex`, `rayon`, `image`, `png`, `zune-jpeg`, `aes`, `sha1`, `sha2`, `thiserror`,
+   and `unicode-ident`) are distributed under permissive open-source licenses (`MIT`,
+   `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `Zlib`, `0BSD`, `Unlicense`, and `Unicode-3.0`).
+   Full per-crate copyright notices and license texts are bundled inside the Android application
+   package at `assets/licenses/THIRD_PARTY_LICENSES.txt` and viewable in-app via the
+   "About & Open Source Licenses" dialog.
+
+The per-file non-code asset attribution table is maintained in ATTRIBUTION.md.

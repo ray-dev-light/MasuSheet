@@ -1,29 +1,32 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
+import com.masusheet.app.MainActivity
+import com.masusheet.app.ai.MacroStep
+import com.masusheet.app.bridge.NativeEngineGateway
+import com.masusheet.app.bridge.RustJniEngineGateway
+import com.masusheet.app.core.FormulaPointModeHelper
+import com.masusheet.app.core.InlineCheckboxHelper
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.CustomCellStyleOverride
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeCellModel
+import com.masusheet.app.model.NativeMergeRange
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.storage.AndroidKeystoreSecretStore
+import com.masusheet.app.storage.ContentResolverDocumentGatewayFactory
+import com.masusheet.app.storage.DocumentIoGateway
+import com.masusheet.app.storage.MasuSheetPreferencesRepository
+import com.masusheet.app.storage.SharedPreferencesStoreFactory
+import com.masusheet.app.ui.MasuSheetScreen
+import kotlin.math.abs
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.Base64
-import kotlin.math.abs
-import kotlin.math.roundToInt
 
 /**
  * ============================================================================
@@ -558,7 +561,8 @@ class MasuSheetViewModel(
     }
 
     /**
-     * Selects the entire column(s) `startCol..endCol` (from row `0` to `lastRow`), matching Spreadsheet's click/drag on column headers `A, B, C...`.
+     * [EN] Selects entire column(s) `startCol..endCol` across `0..maxRow` when tapping or dragging column headers `A, B, C...`.
+     * [JA] 列ヘッダ（`A, B, C...`）のタップ／ドラッグ時に、`startCol..endCol` の列全体（先頭行〜最終行）を選択します。
      */
     fun onSelectEntireColumn(startCol: Int, endCol: Int = startCol) {
         val cur = _uiState.value
@@ -596,7 +600,8 @@ class MasuSheetViewModel(
     }
 
     /**
-     * Selects the entire row(s) `startRow..endRow` (from column `0` to `lastCol`), matching Spreadsheet's click/drag on row headers `1, 2, 3...`.
+     * [EN] Selects entire row(s) `startRow..endRow` across `0..maxCol` when tapping or dragging row headers `1, 2, 3...`.
+     * [JA] 行ヘッダ（`1, 2, 3...`）のタップ／ドラッグ時に、`startRow..endRow` の行全体（先頭列〜最終列）を選択します。
      */
     fun onSelectEntireRow(startRow: Int, endRow: Int = startRow) {
         val cur = _uiState.value
@@ -634,7 +639,8 @@ class MasuSheetViewModel(
     }
 
     /**
-     * Selects all cells on the worksheet (`0..maxRow`, `0..maxCol`), matching Spreadsheet's top-left corner `◢` Select All button.
+     * [EN] Selects every cell on the active worksheet (`0..maxRow`, `0..maxCol`) when tapping the top-left `◢` corner button or pressing `Ctrl+A`.
+     * [JA] 左上の全選択ボタン（`◢`）または `Ctrl+A` 操作時に、アクティブシートの全セル範囲を選択します。
      */
     fun onSelectAllCells() {
         val currentSnap = _uiState.value.viewport
@@ -674,7 +680,8 @@ class MasuSheetViewModel(
     }
 
     /**
-     * Estimates how many visual lines [text] wraps into when rendered inside [availWidthPt] at [fontSizePt].
+     * [EN] Estimates how many visual wrapped lines `text` occupies inside `availWidthPt` at `fontSizePt` (accounting for CJK full-width characters).
+     * [JA] 全角・半角文字幅を考慮し、`availWidthPt` 幅・`fontSizePt` サイズで文字列を折り返した際の視覚行数を算出します。
      */
     fun computeWrappedLineCount(text: String, fontSizePt: Float, availWidthPt: Float): Int {
         if (text.isEmpty()) return 1
@@ -721,9 +728,8 @@ class MasuSheetViewModel(
     }
 
     /**
-     * Tight, accurate column auto-fit when double-clicking a column boundary (`A|B`):
-     * - If the column has no text at all, keeps its current width (or resets oversized empty column to 64pt) without expanding it.
-     * - If the column has 1-line text, fits tightly around the longest cell text + 10pt padding (`5pt` left + `5pt` right).
+     * [EN] Auto-fits column `col` tightly around its widest non-merged cell content (or resets an empty oversized column to `64pt`).
+     * [JA] 列内の非結合セルの最大文字幅に合わせて列幅を自動調整します（空の拡幅済み列は標準の `64pt` に戻します）。
      */
     fun onAutoFitColumn(col: Int) {
         val snap = _uiState.value.viewport
@@ -792,10 +798,8 @@ class MasuSheetViewModel(
     }
 
     /**
-     * Tight, accurate row auto-fit when clicking/double-clicking a row boundary (`1|2`) or toggling wrap text:
-     * - Resets expanded empty rows back to standard `20pt` height.
-     * - Standard 11pt 1-line rows fit snugly at `20pt` (never bloated to 26-28pt!).
-     * - Multi-line wrapped cells or larger font sizes expand proportionally to fit all lines, and clicking again collapses back to `20pt`.
+     * [EN] Auto-fits row `row` height to accommodate multi-line wrapped text and font sizes, collapsing single-line standard rows cleanly to `20pt`.
+     * [JA] 折り返し行数やフォントサイズに合わせて行高を自動調整し、1行標準テキストや空行は標準の `20pt` に収めます。
      */
     fun onAutoFitRow(row: Int) {
         val snap = _uiState.value.viewport
@@ -850,8 +854,8 @@ class MasuSheetViewModel(
     }
 
     /**
-     * Clears the selected cell(s) and also converts any accidental Spreadsheet Table (`Column1`) back to a normal range
-     * so Backspace/Delete always clears `Column1` cleanly.
+     * [EN] Deletes the currently selected floating object if one is active, or clears contents in the selected cell range (converting accidental empty tables to ranges).
+     * [JA] オブジェクト選択時はそのオブジェクトを削除し、セル選択時は選択範囲の数式・値を消去します。
      */
     fun onClearSelectedCells() {
         val selObjId = _uiState.value.selectedObjectId
@@ -869,8 +873,8 @@ class MasuSheetViewModel(
     }
 
     /**
-     * Extracts the currently selected cell or range as plain text (TSV for multi-cell ranges)
-     * so it can be placed on Android's system-wide [ android.content.ClipboardManager ] and pasted into any app.
+     * [EN] Serializes the current cell or multi-cell selection as plain text / tab-separated values (TSV) for system clipboard copy.
+     * [JA] 現在選択されている単一セルまたは矩形セル範囲の表示値を、システムクリップボード用のテキスト／TSV形式に変換します。
      */
     fun extractSelectedTextForClipboard(): String {
         val snap = _uiState.value.viewport
@@ -1250,6 +1254,25 @@ class MasuSheetViewModel(
         val targetMaxC = maxOf(vp.colWidths.size - 1, needCols).coerceAtMost(512)
         val expanded = engineGateway.getViewport(targetMaxR, targetMaxC)
         applyViewportSnapshot(expanded)
+    }
+
+    /**
+     * [EN] Releases all native Rust engine sessions owned by this ViewModel when the hosting Activity/window finishes.
+     * [JA] Activity／ウィンドウ終了時に、この ViewModel が保持するすべての Rust ネイティブセッションを解放します。
+     */
+    public override fun onCleared() {
+        val sessionIds = buildSet {
+            _uiState.value.openWorkbooks.forEach { wb ->
+                if (wb.nativeSessionId > 0L) add(wb.nativeSessionId)
+            }
+            if (engineGateway.activeSessionId > 0L) {
+                add(engineGateway.activeSessionId)
+            }
+        }
+        for (sid in sessionIds) {
+            runCatching { engineGateway.closeSession(sid) }
+        }
+        super.onCleared()
     }
 
     companion object {

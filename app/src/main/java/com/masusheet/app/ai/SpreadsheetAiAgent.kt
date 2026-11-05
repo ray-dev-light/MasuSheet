@@ -1,12 +1,7 @@
-package com.masusheet.app
+package com.masusheet.app.ai
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import org.json.JSONArray
-import org.json.JSONObject
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.NativeViewportSnapshot
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -15,10 +10,9 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
-import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * ============================================================================
@@ -118,8 +112,8 @@ object SpreadsheetAiAgent {
     )
 
     /**
-     * Builds a compact JSON summary of the active worksheet so both the Cloud LLM and the Local Agent
-     * understand the current headers, rows, data types, formulas, and selection.
+     * [EN] Builds a compact text summary of the active worksheet's headers, populated rows, formulas, and selection for LLM context injection.
+     * [JA] アクティブシートの見出し・入力済み行・数式・選択範囲を抽出し、AIプロンプトへ渡すコンパクトな要約テキストを生成します。
      */
     fun summarizeSheetContext(vp: NativeViewportSnapshot): String {
         val sb = StringBuilder()
@@ -152,8 +146,8 @@ object SpreadsheetAiAgent {
     }
 
     /**
-     * Generates contextual clarifying questions (`1 of 3` card) when running in `plan` mode
-     * for any user prompt!
+     * [EN] Generates contextual multiple-choice clarifying questions before mutating cells when running in AI `plan` mode.
+     * [JA] AI「プラン」モード実行時に、シート変更前の確認用選択式質問リストをプロンプトとシート内容に応じて生成します。
      */
     fun buildClarifyingQuestions(
         prompt: String,
@@ -278,8 +272,8 @@ object SpreadsheetAiAgent {
     }
 
     /**
-     * Returns a pair of (ModelStatusLine, ModeBehaviorLine) explaining what the currently selected
-     * AI Model and Permission Mode do.
+     * [EN] Returns localized `(modelStatusLine, modeBehaviorLine)` strings describing the active AI provider/endpoint and edit-permission mode.
+     * [JA] 現在選択されているAIモデル（内蔵・クラウドAPI・ローカルLLM）と権限モード（編集許可・プラン・チャットのみ）の状態説明文ペアを返します。
      */
     fun describeModelAndModeStatus(
         modelId: String,
@@ -364,8 +358,8 @@ object SpreadsheetAiAgent {
     }
 
     /**
-     * Executes a user prompt using either a configured Cloud/Local LLM API (if API key / endpoint is provided, or local Edge AI mode is selected)
-     * or the Built-In Default Template Script Engine.
+     * [EN] Executes one AI assistant turn via the configured HTTPS/localhost LLM endpoint or the offline rule-based spreadsheet engine.
+     * [JA] 設定済みのクラウドAPI／ローカルLLMエンドポイント、またはオフライン内蔵ルールエンジンを用いて1ターン分のAI応答とコマンド列を生成します。
      */
     fun executeAgentTurn(
         prompt: String,
@@ -685,26 +679,86 @@ object SpreadsheetAiAgent {
         "pivotAnalyze.", "pivotDesign.", "chart.", "chartDesign."
     )
 
+    private val BLOCKED_DESTRUCTIVE_AI_COMMANDS = setOf(
+        "home.deleteSheet",
+        "sheet.delete",
+        "edit.clearAll",
+        "home.clearAll"
+    )
+
+    private const val MAX_HTTP_RESPONSE_CHARS = 4 * 1024 * 1024 // 4 MiB character ceiling
+
+    private val AI_FALLBACK_IO_POOL: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
+            Thread(r, "masusheet-ai-http").apply { isDaemon = true }
+        }
+
     internal fun isAllowedAiCommand(cmdName: String): Boolean {
         val clean = cmdName.trim()
         if (clean.isEmpty()) return false
+        if (clean in BLOCKED_DESTRUCTIVE_AI_COMMANDS) return false
         if (clean == "ui.insertChart") return true
         return ALLOWED_AI_COMMAND_PREFIXES.any { clean.startsWith(it) }
     }
 
+    /**
+     * [EN] Extracts the first top-level balanced `{ ... }` JSON object (respecting quoted strings and backslash escapes)
+     *      that parses as a valid `JSONObject`, preventing prose braces outside the JSON block from breaking parsing.
+     * [JA] クォート文字列とエスケープを考慮してバランスの取れた `{ ... }` JSONオブジェクトを安全に抽出します。
+     */
+    internal fun extractBalancedJsonObject(rawText: String): JSONObject? {
+        var searchIdx = rawText.indexOf('{')
+        while (searchIdx >= 0 && searchIdx < rawText.length) {
+            var depth = 0
+            var inString = false
+            var escaped = false
+            for (i in searchIdx until rawText.length) {
+                val ch = rawText[i]
+                if (inString) {
+                    if (escaped) {
+                        escaped = false
+                    } else if (ch == '\\') {
+                        escaped = true
+                    } else if (ch == '"') {
+                        inString = false
+                    }
+                } else {
+                    when (ch) {
+                        '"' -> inString = true
+                        '{' -> depth++
+                        '}' -> {
+                            depth--
+                            if (depth == 0) {
+                                val candidate = rawText.substring(searchIdx, i + 1)
+                                val parsed = runCatching { JSONObject(candidate) }.getOrNull()
+                                if (parsed != null && (parsed.has("reply") || parsed.has("commands") || parsed.has("bullets"))) {
+                                    return parsed
+                                }
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            searchIdx = rawText.indexOf('{', searchIdx + 1)
+        }
+        val fallbackBlock = rawText.substringAfter("{", "")
+            .let { if (it.isNotEmpty()) "{$it".substringBeforeLast("}") + "}" else "" }
+        return if (fallbackBlock.isNotEmpty()) runCatching { JSONObject(fallbackBlock) }.getOrNull() else null
+    }
+
     fun parseJsonAiTurnResult(rawResponse: String, editMode: String = "allow_edit"): AiTurnExecutionResult? {
-        val jsonBlock = rawResponse.substringAfter("{", "").let { if (it.isNotEmpty()) "{$it".substringBeforeLast("}") + "}" else "" }
-        if (jsonBlock.isEmpty()) return null
-        val parsed = runCatching { JSONObject(jsonBlock) }.getOrNull() ?: return null
+        val parsed = extractBalancedJsonObject(rawResponse) ?: return null
+        val normalizedMode = if (editMode == "chat_only") "chat" else editMode
         val reply = parsed.optString("reply", "AIによる処理が完了しました。")
         val bulletsArr = parsed.optJSONArray("bullets")
         val bullets = if (bulletsArr != null) {
-            List(bulletsArr.length()) { i -> bulletsArr.optString(i) }
+            List(min(bulletsArr.length(), 100)) { i -> bulletsArr.optString(i) }
         } else {
             emptyList()
         }
         val cmds = mutableListOf<Pair<String, String>>()
-        if (editMode != "chat") {
+        if (normalizedMode != "chat") {
             val cmdsArr = parsed.optJSONArray("commands")
             if (cmdsArr != null) {
                 for (i in 0 until min(cmdsArr.length(), 500)) {
@@ -720,10 +774,28 @@ object SpreadsheetAiAgent {
         return AiTurnExecutionResult(replyText = reply, summaryBullets = bullets, commands = cmds)
     }
 
+    private fun readBoundedReaderText(reader: BufferedReader, maxChars: Int = MAX_HTTP_RESPONSE_CHARS): String {
+        val sb = StringBuilder()
+        val buf = CharArray(8192)
+        while (true) {
+            val n = reader.read(buf)
+            if (n < 0) break
+            if (n == 0) continue
+            if (sb.length + n > maxChars) {
+                val allowed = (maxChars - sb.length).coerceAtLeast(0)
+                if (allowed > 0) sb.append(buf, 0, allowed)
+                throw java.io.IOException("AI HTTP response exceeded safety limit (${maxChars / (1024 * 1024)} MiB)")
+            }
+            sb.append(buf, 0, n)
+        }
+        return sb.toString()
+    }
+
     private fun httpPostJson(url: URL, jsonBody: String, headers: Map<String, String>): String {
         val isLocalhost = url.host == "127.0.0.1" || url.host == "localhost"
         fun performRequest(): String {
             val conn = (url.openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
                 requestMethod = "POST"
                 connectTimeout = if (isLocalhost) 1800 else 12000
                 readTimeout = 25000
@@ -733,18 +805,22 @@ object SpreadsheetAiAgent {
                     setRequestProperty(k, v)
                 }
             }
-            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(jsonBody) }
-            val status = conn.responseCode
-            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
-            val bodyText = if (stream != null) {
-                BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
-            } else {
-                ""
+            return try {
+                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(jsonBody) }
+                val status = conn.responseCode
+                val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+                val bodyText = if (stream != null) {
+                    BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { readBoundedReaderText(it) }
+                } else {
+                    ""
+                }
+                if (status !in 200..299) {
+                    throw java.io.IOException("HTTP $status: ${bodyText.take(240)}")
+                }
+                bodyText
+            } finally {
+                conn.disconnect()
             }
-            if (status !in 200..299) {
-                throw java.io.IOException("HTTP $status: ${bodyText.take(240)}")
-            }
-            return bodyText
         }
         val isMainThread = runCatching {
             android.os.Looper.myLooper() != null && android.os.Looper.myLooper() == android.os.Looper.getMainLooper()
@@ -752,12 +828,12 @@ object SpreadsheetAiAgent {
         if (!isMainThread) {
             return performRequest()
         }
-        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val future = AI_FALLBACK_IO_POOL.submit<String> { performRequest() }
         return try {
-            executor.submit<String> { performRequest() }
-                .get(if (isLocalhost) 10 else 28, java.util.concurrent.TimeUnit.SECONDS)
-        } finally {
-            executor.shutdownNow()
+            future.get(if (isLocalhost) 10 else 28, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            future.cancel(true)
+            throw e
         }
     }
 
@@ -778,9 +854,8 @@ object SpreadsheetAiAgent {
     }
 
     /**
-     * General-Purpose Local Agentic Spreadsheet Engine:
-     * Dynamically inspects the active sheet's existing data & user prompt to perform arbitrary
-     * edits, formula additions, formatting, chart creation, data analysis, or full custom table generation for ANY topic!
+     * [EN] Offline rule-based spreadsheet agent that inspects the active sheet and user prompt to generate tables, formulas, formatting, or charts without network calls.
+     * [JA] ネットワーク通信なしでシート構造と指示文を解析し、表作成・数式挿入・書式整形・グラフ生成コマンドを組み立てる内蔵エージェントです。
      */
     private fun runGeneralPurposeLocalAgent(
         prompt: String,
@@ -1157,7 +1232,8 @@ object SpreadsheetAiAgent {
     )
 
     /**
-     * Synthesizes a domain-specific or custom user-defined sheet specification for ANY user prompt.
+     * [EN] Infers column headers, sample rows, and summary formulas for a custom domain table requested in natural language.
+     * [JA] 自然言語プロンプトとプラン回答から、業務・用途に応じたカスタム表の列見出し・初期データ・集計数式仕様を合成します。
      */
     private fun synthesizeCustomSheetSpec(
         prompt: String,

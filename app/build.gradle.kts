@@ -145,23 +145,28 @@ android {
 
     packaging {
         resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            merges += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
 }
 
 /**
- * [EN] Prevents building a Release APK when prebuilt Rust JNI libraries (`libmasusheet_jni.so`) are missing.
- * [JA] ネイティブ計算エンジン (`libmasusheet_jni.so`) が未ビルドのまま Release APK が生成されるのを防止します。
+ * [EN] Prevents building a Release APK when prebuilt Rust JNI libraries (`libmasusheet_jni.so`) are missing for any target ABI.
+ * [JA] 対象 ABI (`arm64-v8a`, `x86_64`) のネイティブ計算エンジン (`libmasusheet_jni.so`) が未ビルドのまま Release APK が生成されるのを防止します。
  */
-val arm64JniLibFile = layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libmasusheet_jni.so").asFile
+val requiredJniLibFiles = listOf(
+    layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libmasusheet_jni.so").asFile,
+    layout.projectDirectory.file("src/main/jniLibs/x86_64/libmasusheet_jni.so").asFile
+)
 val verifyReleaseJniLibs by tasks.registering {
-    val targetFile = arm64JniLibFile
+    val targetFiles = requiredJniLibFiles
     doLast {
-        if (!targetFile.isFile || targetFile.length() == 0L) {
-            throw GradleException(
-                "Missing native library ${targetFile.path}. Run `cargo ndk -t arm64-v8a -t x86_64 -o app/src/main/jniLibs build -p masusheet-jni --release` before assembleRelease."
-            )
+        targetFiles.forEach { targetFile ->
+            if (!targetFile.isFile || targetFile.length() == 0L) {
+                throw GradleException(
+                    "Missing native library ${targetFile.path}. Run `cargo ndk -t arm64-v8a -t x86_64 -o app/src/main/jniLibs build -p masusheet-jni --release` before assembleRelease."
+                )
+            }
         }
     }
 }

@@ -1,23 +1,11 @@
-package com.masusheet.app
+package com.masusheet.app.storage
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
-import org.json.JSONObject
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.ExistingFolderFileItem
 import java.io.File
-import java.util.Base64
-import kotlin.math.roundToInt
 
 /**
  * ============================================================================
@@ -46,9 +34,13 @@ interface DocumentIoGateway {
         bytes: ByteArray
     ): String? {
         return try {
+            val safeLeaf = File(fileName).name
+            if (safeLeaf.isBlank() || safeLeaf == "." || safeLeaf == "..") return null
             val dir = File(folderPath)
             if (!dir.exists()) dir.mkdirs()
-            val outFile = File(dir, fileName)
+            val canonicalDir = dir.canonicalFile
+            val outFile = File(canonicalDir, safeLeaf)
+            if (outFile.canonicalFile.parentFile != canonicalDir) return null
             val uriStr = Uri.fromFile(outFile).toString()
             if (writeBytes(uriStr, bytes)) uriStr else null
         } catch (_: Exception) {
@@ -134,6 +126,28 @@ class ContentResolverDocumentGateway(
         isInternalPrivateDataFile(context, file)
 
     companion object {
+        /**
+         * [EN] Hard 64 MiB ceiling on single-document reads to prevent OutOfMemoryError on oversized streams.
+         * [JA] 巨大ストリーム読込による OutOfMemoryError を防ぐ 64 MiB の読込サイズ上限です。
+         */
+        internal const val MAX_DOCUMENT_READ_BYTES = 64 * 1024 * 1024
+        private const val MAX_MEDIASTORE_SCAN_ROWS = 500
+
+        internal fun readBoundedStream(input: java.io.InputStream, maxBytes: Int = MAX_DOCUMENT_READ_BYTES): ByteArray? {
+            val out = java.io.ByteArrayOutputStream()
+            val chunk = ByteArray(16 * 1024)
+            var total = 0
+            while (true) {
+                val n = input.read(chunk)
+                if (n < 0) break
+                if (n == 0) continue
+                total += n
+                if (total > maxBytes) return null
+                out.write(chunk, 0, n)
+            }
+            return out.toByteArray()
+        }
+
         fun isInternalPrivateDataFile(context: Context, file: File): Boolean {
             val canonical = runCatching { file.canonicalFile }.getOrNull() ?: return true
             val dataRoot = runCatching { File(context.applicationInfo.dataDir).canonicalFile }.getOrNull()
@@ -160,9 +174,10 @@ class ContentResolverDocumentGateway(
                 val path = uri.path ?: return null
                 val target = File(path)
                 if (isInternalPrivateDataFile(target)) return null
-                target.readBytes()
+                if (!target.isFile || target.length() > MAX_DOCUMENT_READ_BYTES.toLong()) return null
+                target.inputStream().use { readBoundedStream(it) }
             } else {
-                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                context.contentResolver.openInputStream(uri)?.use { readBoundedStream(it) }
             }
         } catch (_: Exception) {
             null
@@ -231,6 +246,8 @@ class ContentResolverDocumentGateway(
         bytes: ByteArray
     ): String? {
         val cleanFolder = folderPath.trim().trimEnd('/')
+        val safeFileName = File(fileName).name
+        if (safeFileName.isBlank() || safeFileName == "." || safeFileName == "..") return null
 
         // 1. If folderPath is a SAF content:// tree URI (or matches a persisted SAF tree URI for Download/Documents)
         val treeUri = findMatchingPersistedTreeUri(cleanFolder)
@@ -255,7 +272,7 @@ class ContentResolverDocumentGateway(
                     while (cursor.moveToNext()) {
                         val name = if (nameIdx >= 0) cursor.getString(nameIdx) else null
                         val childId = if (idIdx >= 0) cursor.getString(idIdx) else null
-                        if (name != null && childId != null && name.equals(fileName, ignoreCase = true)) {
+                        if (name != null && childId != null && name.equals(safeFileName, ignoreCase = true)) {
                             existingDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
                             break
                         }
@@ -265,7 +282,7 @@ class ContentResolverDocumentGateway(
                     context.contentResolver,
                     parentDocUri,
                     mimeType,
-                    fileName
+                    safeFileName
                 )
                 if (targetDocUri != null && writeBytes(targetDocUri.toString(), bytes)) {
                     targetDocUri.toString()
@@ -285,7 +302,7 @@ class ContentResolverDocumentGateway(
                 perm.isWritePermission &&
                     !android.provider.DocumentsContract.isTreeUri(perm.uri) &&
                     doesPersistedDocumentMatchFolder(perm.uri, cleanFolder, folderLeaf, isDownload, isDocuments) &&
-                    resolveDisplayName(perm.uri.toString()).equals(fileName, ignoreCase = true)
+                    resolveDisplayName(perm.uri.toString()).equals(safeFileName, ignoreCase = true)
             }?.uri
         }.getOrNull()
         if (persistedDocUri != null && writeBytes(persistedDocUri.toString(), bytes)) {
@@ -314,7 +331,7 @@ class ContentResolverDocumentGateway(
                     collection,
                     projection,
                     "${android.provider.MediaStore.MediaColumns.DISPLAY_NAME} = ?",
-                    arrayOf(fileName),
+                    arrayOf(safeFileName),
                     null
                 )?.use { cursor ->
                     val idCol = cursor.getColumnIndex(android.provider.MediaStore.MediaColumns._ID)
@@ -331,7 +348,7 @@ class ContentResolverDocumentGateway(
                 val isCreatedNew = existingMediaUri == null
                 val targetUri = existingMediaUri ?: run {
                     val values = android.content.ContentValues().apply {
-                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, safeFileName)
                         put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType)
                         put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "$relDir/")
                         put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
@@ -356,11 +373,13 @@ class ContentResolverDocumentGateway(
             if (savedViaMediaStore != null) return savedViaMediaStore
         }
 
-        // 3. Direct filesystem fallback + MediaScannerConnection indexing
+        // 3. Direct filesystem fallback + canonical parent check + MediaScannerConnection indexing
         return try {
             val dir = File(cleanFolder)
             if (!dir.exists()) dir.mkdirs()
-            val outFile = File(dir, fileName)
+            val canonicalDir = dir.canonicalFile
+            val outFile = File(canonicalDir, safeFileName)
+            if (outFile.canonicalFile.parentFile != canonicalDir) return null
             val uriStr = Uri.fromFile(outFile).toString()
             if (writeBytes(uriStr, bytes)) uriStr else null
         } catch (_: Exception) {
@@ -502,12 +521,18 @@ class ContentResolverDocumentGateway(
                     android.provider.MediaStore.MediaColumns.DATA
                 )
                 val sortOrder = "${android.provider.MediaStore.MediaColumns.DATE_MODIFIED} DESC"
-                context.contentResolver.query(collection, projection, null, null, sortOrder)?.use { cursor ->
+                val extClauses = supportedExts.joinToString(" OR ") {
+                    "${android.provider.MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?"
+                }
+                val extArgs = supportedExts.map { "%.$it" }.toTypedArray()
+                context.contentResolver.query(collection, projection, extClauses, extArgs, sortOrder)?.use { cursor ->
                     val idCol = cursor.getColumnIndex(android.provider.MediaStore.MediaColumns._ID)
                     val nameCol = cursor.getColumnIndex(android.provider.MediaStore.MediaColumns.DISPLAY_NAME)
                     val relCol = cursor.getColumnIndex(android.provider.MediaStore.MediaColumns.RELATIVE_PATH)
                     val dataCol = cursor.getColumnIndex(android.provider.MediaStore.MediaColumns.DATA)
-                    while (cursor.moveToNext()) {
+                    var scannedRows = 0
+                    while (cursor.moveToNext() && scannedRows < MAX_MEDIASTORE_SCAN_ROWS) {
+                        scannedRows++
                         val name = if (nameCol >= 0) cursor.getString(nameCol) else null
                         if (name.isNullOrBlank()) continue
                         val ext = name.substringAfterLast('.', "").lowercase()

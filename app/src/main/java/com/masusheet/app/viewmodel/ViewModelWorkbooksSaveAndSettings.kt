@@ -1,31 +1,27 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import com.masusheet.app.storage.WorkbookXlsxObjectPersistence
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.ByteArrayOutputStream
+import com.masusheet.app.SecondaryWorkbookActivity
+import com.masusheet.app.bridge.MasuSheetNativeBridge
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.core.SpreadsheetColorPalette
+import com.masusheet.app.core.SpreadsheetI18n
+import com.masusheet.app.core.WorkbookFormatClassifier
+import com.masusheet.app.model.ExistingFolderFileItem
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.model.OpenWorkbookSession
+import com.masusheet.app.model.PivotTableDefinition
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.storage.DocumentIoGateway
+import com.masusheet.app.storage.WorkbookXlsxObjectPersistence
 import java.io.File
 import java.util.Base64
-import kotlin.math.abs
 import kotlin.math.roundToInt
-import com.masusheet.app.MasuSheetViewModel.*
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 /**
  * ============================================================================
@@ -39,8 +35,8 @@ import com.masusheet.app.MasuSheetViewModel.*
  */
 
 /**
- * [EN] ViewModel action/helper `onEngineReady` handling engine ready while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onEngineReady` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Marks the spreadsheet engine as initialized with `version` and clears the initial loading state.
+ * [JA] 計算エンジンの初期化完了とバージョン文字列をUI状態へ反映し、ローディング表示を解除します。
  */
 fun MasuSheetViewModel.onEngineReady(version: String) {
     val current = _uiState.value
@@ -59,8 +55,8 @@ fun MasuSheetViewModel.onEngineReady(version: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onTitleChanged` handling title changed while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTitleChanged` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Updates the active workbook title, syncs the default Save Dialog base name, and records the title in recent workbooks.
+ * [JA] 現在のブック名を更新し、保存ダイアログの初期ファイル名および最近使ったブック履歴へ反映します。
  */
 fun MasuSheetViewModel.onTitleChanged(title: String) {
     val clean = title.trim().ifEmpty { "Book1" }
@@ -73,16 +69,16 @@ fun MasuSheetViewModel.onTitleChanged(title: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onDirtyChanged` handling dirty changed while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDirtyChanged` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Updates the unsaved-changes (`isDirty`) indicator flag on `MasuSheetUiState`.
+ * [JA] 未保存の変更があるかどうかを示す `isDirty` フラグを更新します。
  */
 fun MasuSheetViewModel.onDirtyChanged(dirty: Boolean) {
     _uiState.value = _uiState.value.copy(isDirty = dirty)
 }
 
 /**
- * [EN] ViewModel action/helper `onSaveRequestedFromEngine` handling save requested from engine while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSaveRequestedFromEngine` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Decodes Base64 export bytes emitted by the engine, embeds floating objects/pivots for `.xlsx`/`.xlsm`, and stages `pendingSaveBytes`.
+ * [JA] エンジンから渡されたBase64保存データをデコードし、`.xlsx`/`.xlsm` 時はグラフ・ピボット情報を埋め込んで保存待機状態にセットします。
  */
 fun MasuSheetViewModel.onSaveRequestedFromEngine(fileName: String, base64Payload: String) {
     try {
@@ -104,8 +100,8 @@ fun MasuSheetViewModel.onSaveRequestedFromEngine(fileName: String, base64Payload
 }
 
 /**
- * [EN] ViewModel action/helper `onCompletePendingSave` handling complete pending save while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onCompletePendingSave` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Writes staged/exported workbook bytes to `destinationUriString` via `documentGateway`, updating workbook title, `sourceUri`, and clean state.
+ * [JA] 選択された保存先URI `destinationUriString` へブックデータを書き出し、ブック名・保存先URI・保存済み状態を更新します。
  */
 fun MasuSheetViewModel.onCompletePendingSave(destinationUriString: String): Boolean {
     val current = _uiState.value
@@ -152,8 +148,77 @@ fun MasuSheetViewModel.onCompletePendingSave(destinationUriString: String): Bool
 }
 
 /**
- * [EN] ViewModel action/helper `onCancelPendingSave` handling cancel pending save while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onCancelPendingSave` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Non-blocking coroutine entry point for [onCompletePendingSave] performing SAF/file stream writes and folder scanning on `Dispatchers.IO`.
+ * [JA] SAF／ファイル書込およびフォルダ走査を `Dispatchers.IO` で非同期実行し、UIスレッドのブロック（ANR）を防止します。
+ */
+fun MasuSheetViewModel.onCompletePendingSaveAsync(destinationUriString: String) {
+    val current = _uiState.value
+    val desiredExt = current.saveDialogExtension.ifBlank { "xlsx" }
+    val fallbackCandidate = MasuSheetConfig.sanitizeWorkbookFileName(
+        current.pendingSaveFileName ?: current.workbookTitle,
+        desiredExt
+    )
+    val preparedBytes = current.pendingSaveBytes
+        ?: (if (current.pendingSaveFileName != null || current.isSaveDialogVisible) {
+            buildExportBytesForFormat(fallbackCandidate, desiredExt)
+        } else {
+            null
+        })
+    if (preparedBytes == null) {
+        onCompletePendingSave(destinationUriString)
+        return
+    }
+    val folderPath = current.saveDialogFolderPath
+    _uiState.value = current.copy(isLoading = true)
+    viewModelScope.launch {
+        val ioOutcome = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val resolvedRaw = documentGateway.resolveDisplayName(destinationUriString)
+            val candidateName = if (resolvedRaw.isNotBlank() && resolvedRaw != "Book1.xlsx") {
+                MasuSheetConfig.sanitizeWorkbookFileName(resolvedRaw, desiredExt)
+            } else {
+                fallbackCandidate
+            }
+            val finalName = MasuSheetConfig.sanitizeWorkbookFileName(current.pendingSaveFileName ?: candidateName, desiredExt)
+            val ok = documentGateway.writeBytes(destinationUriString, preparedBytes)
+            val scanned = if (ok) scanExistingFilesInFolder(folderPath) else emptyList()
+            Triple(ok, finalName, scanned)
+        }
+        val (ok, finalName, scannedFiles) = ioOutcome
+        val latest = _uiState.value
+        if (ok) {
+            currentActiveSourceUri = destinationUriString
+            val savedSnap = engineGateway.executeCommand("file.markSaved", "{\"title\":${JSONObject.quote(finalName)}}")
+            preferencesRepository.recordRecentWorkbook(finalName)
+            preferencesRepository.recordSavedFileInFolder(folderPath, finalName)
+            _uiState.value = latest.copy(
+                isLoading = false,
+                workbookTitle = finalName,
+                saveDialogBaseName = MasuSheetConfig.extractBaseNameWithoutExtension(finalName),
+                saveDialogExistingFiles = scannedFiles,
+                pendingSaveFileName = null,
+                pendingSaveBytes = null,
+                isSaveDialogVisible = false,
+                lastSavedFileName = finalName,
+                statusNoticeMessage = if (latest.language == "en") "Saved: $finalName" else "保存しました: $finalName",
+                isDirty = false,
+                viewport = decorateWithCustomSizes(savedSnap.copy(title = finalName, isDirty = false)),
+                recentWorkbooks = preferencesRepository.getRecentWorkbooks()
+            )
+            saveCurrentWorkbookToSessionList()
+        } else {
+            _uiState.value = latest.copy(
+                isLoading = false,
+                pendingSaveFileName = null,
+                pendingSaveBytes = null,
+                errorMessage = if (latest.language == "en") "Failed to save file: $finalName" else "ファイルの保存に失敗しました: $finalName"
+            )
+        }
+    }
+}
+
+/**
+ * [EN] Clears staged pending-save bytes and closes the Save / Export dialog without writing to storage.
+ * [JA] 保留中の保存データ状態をクリアし、ストレージ書き込みを行わずに保存ダイアログを閉じます。
  */
 fun MasuSheetViewModel.onCancelPendingSave() {
     _uiState.value = _uiState.value.copy(
@@ -166,8 +231,8 @@ fun MasuSheetViewModel.onCancelPendingSave() {
 // --- Interactive Save Dialog (Select Existing File Name & Choose Extension Without Typing .xlsx) ---
 
 /**
- * [EN] ViewModel action/helper `scanExistingFilesInFolder` handling scan existing files in folder while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `scanExistingFilesInFolder` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Lists existing spreadsheet/PDF files in `folderPath` (merging `documentGateway.listFolderFiles` and readable local directory entries) for quick overwrite selection.
+ * [JA] 指定フォルダ内の既存スプレッドシート／PDFファイルを走査し、保存ダイアログでの一覧表示・上書き選択用に返します。
  */
 internal fun MasuSheetViewModel.scanExistingFilesInFolder(folderPath: String): List<ExistingFolderFileItem> {
     val items = mutableListOf<ExistingFolderFileItem>()
@@ -270,8 +335,8 @@ internal fun MasuSheetViewModel.advanceObjectCounterPast(objects: List<NativeShe
 }
 
 /**
- * [EN] ViewModel action/helper `buildExportBytesForFormat` handling build export bytes for format while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `buildExportBytesForFormat` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Exports the active workbook as `.xlsx`/`.xlsm` (with embedded OOXML charts/images + lossless overlay), `.pdf`, `.csv`, `.tsv`, or `.ods` bytes.
+ * [JA] 指定拡張子（グラフ・画像・ピボット完全保持の `.xlsx`/`.xlsm`、または `.pdf`・`.csv`・`.tsv`・`.ods`）の保存用バイト列を生成します。
  */
 internal fun MasuSheetViewModel.buildExportBytesForFormat(fileNameWithExt: String, extension: String): ByteArray? {
     val ext = extension.lowercase()
@@ -311,8 +376,8 @@ internal fun MasuSheetViewModel.buildExportBytesForFormat(fileNameWithExt: Strin
 }
 
 /**
- * [EN] ViewModel action/helper `onOpenSaveDialog` handling open save dialog while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onOpenSaveDialog` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Opens the Save / Export dialog initialized with `defaultExtension` and existing files in the target folder.
+ * [JA] 指定された既定拡張子（`xlsx` や `pdf` など）と保存先フォルダ内の既存ファイル一覧をセットして保存ダイアログを開きます。
  */
 fun MasuSheetViewModel.onOpenSaveDialog(defaultExtension: String = "xlsx", prepareBytesImmediately: Boolean = false) {
     val current = _uiState.value
@@ -332,8 +397,8 @@ fun MasuSheetViewModel.onOpenSaveDialog(defaultExtension: String = "xlsx", prepa
 }
 
 /**
- * [EN] ViewModel action/helper `onUpdateSaveDialogBaseName` handling update save dialog base name while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onUpdateSaveDialogBaseName` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Updates the base filename (without extension) in the Save Dialog and refreshes `pendingSaveFileName`.
+ * [JA] 保存ダイアログのファイル名（拡張子を除くベース名）を更新します。
  */
 fun MasuSheetViewModel.onUpdateSaveDialogBaseName(newBaseName: String) {
     val current = _uiState.value
@@ -345,8 +410,8 @@ fun MasuSheetViewModel.onUpdateSaveDialogBaseName(newBaseName: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSelectSaveDialogExtension` handling select save dialog extension while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSelectSaveDialogExtension` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Changes the target file format extension (`xlsx`, `pdf`, `csv`, `tsv`, `ods`) inside the Save Dialog.
+ * [JA] 保存ダイアログの出力ファイル形式（`xlsx`・`pdf`・`csv`・`tsv`・`ods`）を切り替えます。
  */
 fun MasuSheetViewModel.onSelectSaveDialogExtension(newExtension: String) {
     val current = _uiState.value
@@ -360,8 +425,8 @@ fun MasuSheetViewModel.onSelectSaveDialogExtension(newExtension: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSelectSaveDialogFolder` handling select save dialog folder while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSelectSaveDialogFolder` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Switches the target folder in the Save Dialog and refreshes its existing-files list.
+ * [JA] 保存ダイアログの保存先フォルダを切り替え、そのフォルダ内の既存ファイル一覧を再取得します。
  */
 fun MasuSheetViewModel.onSelectSaveDialogFolder(folderPath: String) {
     _uiState.value = _uiState.value.copy(
@@ -371,8 +436,8 @@ fun MasuSheetViewModel.onSelectSaveDialogFolder(folderPath: String) {
 }
 
 /**
- * Called when the user clicks an existing file in the Save Dialog's folder list:
- * immediately sets the save filename to that existing file's name without blocking on eager export (`M-09`).
+ * [EN] Populates the Save Dialog filename and extension from a tapped `ExistingFolderFileItem` without blocking on eager export.
+ * [JA] 保存ダイアログ内の既存ファイル項目をタップした際、エクスポート処理でブロックすることなくファイル名と拡張子を即座に欄へ反映します。
  */
 fun MasuSheetViewModel.onSelectExistingFileForSaveName(item: ExistingFolderFileItem) {
     val current = _uiState.value
@@ -387,8 +452,8 @@ fun MasuSheetViewModel.onSelectExistingFileForSaveName(item: ExistingFolderFileI
 }
 
 /**
- * [EN] ViewModel action/helper `onConfirmSaveDirectlyToFolder` handling confirm save directly to folder while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onConfirmSaveDirectlyToFolder` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Exports the active workbook in the chosen format and saves it directly into `saveDialogFolderPath` (falling back to SAF picker only if required).
+ * [JA] 選択された形式でブックデータを生成し、指定フォルダへ直接保存します（権限不足等で直接書込不可の場合のみシステムピッカーへ誘導）。
  */
 fun MasuSheetViewModel.onConfirmSaveDirectlyToFolder(): Boolean {
     val current = _uiState.value
@@ -442,24 +507,146 @@ fun MasuSheetViewModel.onConfirmSaveDirectlyToFolder(): Boolean {
 }
 
 /**
- * [EN] ViewModel action/helper `onDismissSaveDialog` handling dismiss save dialog while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDismissSaveDialog` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Opens the Save Dialog immediately on the UI thread and scans existing folder files asynchronously on `Dispatchers.IO`.
+ * [JA] 保存ダイアログを即座に表示し、既存ファイル一覧の取得（MediaStore / SAF 走査）を `Dispatchers.IO` で非同期実行します。
+ */
+fun MasuSheetViewModel.onOpenSaveDialogAsync(defaultExtension: String = "xlsx") {
+    val current = _uiState.value
+    val base = MasuSheetConfig.extractBaseNameWithoutExtension(current.workbookTitle)
+    val ext = defaultExtension.trim().trimStart('.').lowercase().ifEmpty { "xlsx" }
+    val safeName = MasuSheetConfig.buildFileNameWithExtension(base, ext)
+    val folderPath = current.saveDialogFolderPath
+    _uiState.value = current.copy(
+        isSaveDialogVisible = true,
+        saveDialogBaseName = base,
+        saveDialogExtension = ext,
+        pendingSaveFileName = safeName,
+        pendingSaveBytes = null
+    )
+    viewModelScope.launch {
+        val existing = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            scanExistingFilesInFolder(folderPath)
+        }
+        if (_uiState.value.saveDialogFolderPath == folderPath) {
+            _uiState.value = _uiState.value.copy(saveDialogExistingFiles = existing)
+        }
+    }
+}
+
+/**
+ * [EN] Updates the target folder in the Save Dialog and scans its spreadsheet files asynchronously on `Dispatchers.IO`.
+ * [JA] 保存先フォルダを切り替え、フォルダ内ファイル一覧の走査を `Dispatchers.IO` で非同期実行します。
+ */
+fun MasuSheetViewModel.onSelectSaveDialogFolderAsync(folderPath: String, onScanCompleted: (() -> Unit)? = null) {
+    _uiState.value = _uiState.value.copy(saveDialogFolderPath = folderPath)
+    viewModelScope.launch {
+        val existing = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            scanExistingFilesInFolder(folderPath)
+        }
+        if (_uiState.value.saveDialogFolderPath == folderPath) {
+            _uiState.value = _uiState.value.copy(saveDialogExistingFiles = existing)
+        }
+        onScanCompleted?.invoke()
+    }
+}
+
+/**
+ * [EN] Exports workbook bytes and writes them to the selected folder on `Dispatchers.IO` without blocking the UI thread.
+ * [JA] ブックバイナリのパッケージングおよびフォルダへの保存処理を `Dispatchers.IO` で非同期実行します。
+ */
+fun MasuSheetViewModel.onConfirmSaveDirectlyToFolderAsync() {
+    val current = _uiState.value
+    val ext = current.saveDialogExtension.lowercase()
+    val finalName = MasuSheetConfig.buildFileNameWithExtension(current.saveDialogBaseName, ext)
+    ensureDefaultSalesDashboardChartsMaterialized()
+    engineGateway.syncWorkbookObjects(current.sheetObjects)
+    val rawBytes: ByteArray? = when (ext) {
+        "pdf" -> engineGateway.exportPdfBytes()
+        "csv", "tsv" -> buildExportBytesForFormat(finalName, ext)
+        else -> engineGateway.saveWorkbookBytes(finalName)
+    }
+    if (rawBytes == null) {
+        _uiState.value = current.copy(
+            errorMessage = if (current.language == "en") {
+                "Native spreadsheet engine is unavailable for binary export ($finalName). Saved data was protected from overwrite."
+            } else {
+                "ネイティブ計算エンジンが未ロードのためバイナリ出力を中止し、既存ファイルの上書き破損を防止しました: $finalName"
+            }
+        )
+        return
+    }
+    val persistenceSession = if (ext in setOf("xlsx", "xlsm")) buildCurrentWorkbookPersistenceSession() else null
+    val folderPath = current.saveDialogFolderPath
+    val mimeType = MasuSheetConfig.resolveExportMimeType(ext)
+    _uiState.value = current.copy(isLoading = true)
+    viewModelScope.launch {
+        val ioResult = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val finalBytes = if (persistenceSession != null) {
+                WorkbookXlsxObjectPersistence.embedIntoXlsxBytes(rawBytes, persistenceSession)
+            } else {
+                rawBytes
+            }
+            val savedUri = documentGateway.saveFileInFolder(
+                folderPath = folderPath,
+                fileName = finalName,
+                mimeType = mimeType,
+                bytes = finalBytes
+            )
+            val scanned = if (savedUri != null) scanExistingFilesInFolder(folderPath) else emptyList()
+            savedUri to scanned
+        }
+        val (savedUriStr, scannedFiles) = ioResult
+        val latest = _uiState.value
+        if (savedUriStr != null) {
+            currentActiveSourceUri = savedUriStr
+            val savedSnap = engineGateway.executeCommand("file.markSaved", "{\"title\":${JSONObject.quote(finalName)}}")
+            preferencesRepository.recordRecentWorkbook(finalName)
+            preferencesRepository.recordSavedFileInFolder(folderPath, finalName)
+            _uiState.value = latest.copy(
+                isLoading = false,
+                workbookTitle = finalName,
+                saveDialogBaseName = MasuSheetConfig.extractBaseNameWithoutExtension(finalName),
+                saveDialogExistingFiles = scannedFiles,
+                pendingSaveFileName = null,
+                pendingSaveBytes = null,
+                isSaveDialogVisible = false,
+                lastSavedFileName = finalName,
+                statusNoticeMessage = if (latest.language == "en") "Saved: $finalName" else "保存しました: $finalName",
+                isDirty = false,
+                viewport = decorateWithCustomSizes(savedSnap.copy(title = finalName, isDirty = false)),
+                recentWorkbooks = preferencesRepository.getRecentWorkbooks()
+            )
+            saveCurrentWorkbookToSessionList()
+        } else {
+            _uiState.value = latest.copy(
+                isLoading = false,
+                pendingSaveFileName = null,
+                pendingSaveBytes = null,
+                errorMessage = if (latest.language == "en") "Failed to save file: $finalName" else "ファイルの保存に失敗しました: $finalName"
+            )
+        }
+    }
+}
+
+/**
+ * [EN] Hides the Save / Export dialog while preserving workbook state.
+ * [JA] 保存／エクスポートダイアログを閉じます。
  */
 fun MasuSheetViewModel.onDismissSaveDialog() {
     _uiState.value = _uiState.value.copy(isSaveDialogVisible = false)
 }
 
 /**
- * [EN] ViewModel action/helper `onDismissStatusNotice` handling dismiss status notice while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDismissStatusNotice` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Clears the transient status notice banner message.
+ * [JA] 画面上の一時ステータス通知メッセージを消去します。
  */
 fun MasuSheetViewModel.onDismissStatusNotice() {
     _uiState.value = _uiState.value.copy(statusNoticeMessage = null)
 }
 
 /**
- * [EN] ViewModel action/helper `saveCurrentWorkbookToSessionList` handling save current workbook to session list while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `saveCurrentWorkbookToSessionList` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Snapshots the active workbook's overlays, objects, PivotTables, Undo stacks, and optional `.xlsx` bytes into `MasuSheetUiState.openWorkbooks`.
+ * [JA] 現在アクティブなブックの書式・オブジェクト・ピボット・Undo履歴（および任意のシリアライズ済みバイト列）を `openWorkbooks` セッション一覧へ保存します。
  */
 fun MasuSheetViewModel.saveCurrentWorkbookToSessionList(includeSerializedBytes: Boolean = false) {
     val cur = _uiState.value
@@ -503,8 +690,8 @@ fun MasuSheetViewModel.saveCurrentWorkbookToSessionList(includeSerializedBytes: 
 }
 
 /**
- * [EN] ViewModel action/helper `onCreateNewBlankWorkbookSession` handling create new blank workbook session while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onCreateNewBlankWorkbookSession` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Creates a new isolated `BookN.xlsx` blank workbook session tab (with its own native engine session) and switches to it.
+ * [JA] 既存ブックを保持したまま、独立したエンジンセッションを持つ新規空白ブック（`BookN.xlsx`）タブを作成して切り替えます。
  */
 fun MasuSheetViewModel.onCreateNewBlankWorkbookSession() {
     saveCurrentWorkbookToSessionList()
@@ -563,8 +750,8 @@ fun MasuSheetViewModel.onCreateNewBlankWorkbookSession() {
 }
 
 /**
- * [EN] ViewModel action/helper `onSwitchOpenWorkbook` handling switch open workbook while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSwitchOpenWorkbook` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Saves the current workbook session state and activates open workbook tab `workbookId` along with its isolated engine session and overlays.
+ * [JA] 現在のブック状態を退避した上で、指定された `workbookId` のブックセッションと専用エンジン・オーバーレイ状態を復元します。
  */
 fun MasuSheetViewModel.onSwitchOpenWorkbook(workbookId: String): Boolean {
     val cur = _uiState.value
@@ -635,8 +822,8 @@ fun MasuSheetViewModel.onSwitchOpenWorkbook(workbookId: String): Boolean {
 }
 
 /**
- * [EN] ViewModel action/helper `onCloseOpenWorkbook` handling close open workbook while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onCloseOpenWorkbook` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Closes open workbook tab `workbookId`, releases its native Rust engine session (`closeSession`), and activates an adjacent open workbook.
+ * [JA] 指定されたブックタブ `workbookId` を閉じて対応するネイティブRustセッションを解放し、残りのブックタブへ切り替えます。
  */
 fun MasuSheetViewModel.onCloseOpenWorkbook(workbookId: String): Boolean {
     val cur = _uiState.value
@@ -714,6 +901,14 @@ fun MasuSheetViewModel.prepareWorkbookSessionForNewWindow(
  * [JA] 別ウィンドウへ移動された [OpenWorkbookSession] の全オブジェクト・ピボット・書式を欠落なく復元します。
  */
 fun MasuSheetViewModel.onLoadHandoffWorkbookSession(session: OpenWorkbookSession) {
+    val previousSessionIds = buildSet {
+        _uiState.value.openWorkbooks.forEach { wb ->
+            if (wb.nativeSessionId > 0L) add(wb.nativeSessionId)
+        }
+        if (engineGateway.activeSessionId > 0L) {
+            add(engineGateway.activeSessionId)
+        }
+    }
     currentWorkbookIdForStacks = "book_1"
     currentActiveSourceUri = session.sourceUri
     customColWidths.clear()
@@ -733,6 +928,11 @@ fun MasuSheetViewModel.onLoadHandoffWorkbookSession(session: OpenWorkbookSession
     val safeTitle = session.title.ifBlank { "Book1.xlsx" }
     val bytes = session.savedWorkbookBytes
     val sid = engineGateway.createSession(session.sampleKind.ifBlank { "blank" })
+    for (oldSid in previousSessionIds) {
+        if (oldSid != sid) {
+            runCatching { engineGateway.closeSession(oldSid) }
+        }
+    }
     val snap = if (bytes != null && bytes.isNotEmpty()) {
         val opened = engineGateway.openWorkbookBytes(safeTitle, bytes)
         if (session.activeSheetIndex > 0 && session.activeSheetIndex < opened.totalSheetCount) {
@@ -790,8 +990,8 @@ fun MasuSheetViewModel.onLoadHandoffWorkbookSession(session: OpenWorkbookSession
 }
 
 /**
- * [EN] ViewModel action/helper `onLoadHandoffWorkbook` handling load handoff workbook while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onLoadHandoffWorkbook` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Loads a workbook `(title, bytes, sampleKind, activeSheetIndex)` handed off into a newly opened secondary window.
+ * [JA] 別ウィンドウ起動時に引き渡されたブックデータとシート選択位置をこのウィンドウへ読み込みます。
  */
 fun MasuSheetViewModel.onLoadHandoffWorkbook(
     title: String,
@@ -907,8 +1107,8 @@ fun MasuSheetViewModel.onMergeHandoffWorkbookSession(session: OpenWorkbookSessio
 }
 
 /**
- * [EN] ViewModel action/helper `onMergeHandoffWorkbookIntoCurrentWindow` handling merge handoff workbook into current window while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onMergeHandoffWorkbookIntoCurrentWindow` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Merges a workbook handed back from a secondary window into the main window's open workbook tab bar.
+ * [JA] サブウィンドウからメインウィンドウへ戻されたブックデータを、現在のウィンドウの開いているブック一覧へ統合します。
  */
 fun MasuSheetViewModel.onMergeHandoffWorkbookIntoCurrentWindow(
     title: String,
@@ -928,8 +1128,8 @@ fun MasuSheetViewModel.onMergeHandoffWorkbookIntoCurrentWindow(
 }
 
 /**
- * [EN] ViewModel action/helper `onToggleSplitBookView` handling toggle split book view while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onToggleSplitBookView` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Enables or disables side-by-side Split Book View for comparing two open workbooks in the same window.
+ * [JA] 同一ウィンドウ内で2つのブックを左右に並べて比較・参照する「ブック並列表示（分割ビュー）」を切り替えます。
  */
 fun MasuSheetViewModel.onToggleSplitBookView(enable: Boolean? = null) {
     val cur = _uiState.value
@@ -946,16 +1146,16 @@ fun MasuSheetViewModel.onToggleSplitBookView(enable: Boolean? = null) {
 }
 
 /**
- * [EN] ViewModel action/helper `onToggleSplitWorkbookView` handling toggle split workbook view while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onToggleSplitWorkbookView` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Alias for `onToggleSplitBookView` invoked by View-tab ribbon actions.
+ * [JA] ブック並列表示（分割ビュー）の表示状態を切り替えます（`onToggleSplitBookView` のエイリアス）。
  */
 fun MasuSheetViewModel.onToggleSplitWorkbookView(enable: Boolean? = null) {
     onToggleSplitBookView(enable)
 }
 
 /**
- * [EN] ViewModel action/helper `getSplitSecondaryWorkbookSession` handling get split secondary workbook session while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `getSplitSecondaryWorkbookSession` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Returns the non-active `OpenWorkbookSession` (or active session as single-book fallback) displayed in the right-hand Split Book pane.
+ * [JA] ブック並列表示時に右側ペインへ表示するサブブックセッション（別ブックが無い場合は現在ブック）を返します。
  */
 fun MasuSheetViewModel.getSplitSecondaryWorkbookSession(): OpenWorkbookSession? {
     val cur = _uiState.value
@@ -964,16 +1164,16 @@ fun MasuSheetViewModel.getSplitSecondaryWorkbookSession(): OpenWorkbookSession? 
 }
 
 /**
- * [EN] ViewModel action/helper `onCreateBlankWorkbook` handling create blank workbook while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onCreateBlankWorkbook` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Creates a new blank workbook tab via `onCreateNewBlankWorkbookSession`.
+ * [JA] 新しい空白ブックセッションを作成します（`onCreateNewBlankWorkbookSession` の呼び出しラッパー）。
  */
 fun MasuSheetViewModel.onCreateBlankWorkbook() {
     onCreateNewBlankWorkbookSession()
 }
 
 /**
- * [EN] ViewModel action/helper `onLoadSampleTemplate` handling load sample template while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onLoadSampleTemplate` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Normalizes `sampleName` (mapping `monthly_budget` -> `budget`) and loads the requested built-in sample workbook.
+ * [JA] テンプレート名を正規化した上で、指定された内蔵サンプルブックを読み込みます。
  */
 fun MasuSheetViewModel.onLoadSampleTemplate(sampleName: String) {
     val norm = if (sampleName.equals("monthly_budget", ignoreCase = true)) "budget" else sampleName
@@ -981,15 +1181,15 @@ fun MasuSheetViewModel.onLoadSampleTemplate(sampleName: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onOpenDocumentUri` handling open document uri while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onOpenDocumentUri` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Creates an isolated engine session for loaded file `bytes`, restores any embedded MasuSheet object/pivot overlay, and activates the new workbook tab.
+ * [JA] 読み込んだファイルバイト列から独立エンジンセッションを生成し、埋め込みグラフ・ピボット情報を復元して新規ブックタブとして開きます。
  */
-fun MasuSheetViewModel.onOpenDocumentUri(uriString: String): Boolean {
-    val bytes = documentGateway.readBytes(uriString)
-    if (bytes == null || bytes.isEmpty()) {
-        _uiState.value = _uiState.value.copy(errorMessage = "ファイルを読み込めませんでした")
-        return false
-    }
+internal fun MasuSheetViewModel.applyLoadedDocumentBytes(
+    uriString: String,
+    bytes: ByteArray,
+    rawName: String,
+    persistedOverlay: OpenWorkbookSession?
+): Boolean {
     saveCurrentWorkbookToSessionList()
     val existingByUri = _uiState.value.openWorkbooks.firstOrNull {
         it.sourceUri.isNotBlank() && it.sourceUri == uriString
@@ -997,7 +1197,6 @@ fun MasuSheetViewModel.onOpenDocumentUri(uriString: String): Boolean {
     if (existingByUri != null && (existingByUri.viewportSnapshot.isDirty || (existingByUri.id == _uiState.value.activeWorkbookId && _uiState.value.isDirty))) {
         return onSwitchOpenWorkbook(existingByUri.id)
     }
-    val rawName = documentGateway.resolveDisplayName(uriString)
     val safeName = MasuSheetConfig.sanitizeWorkbookFileName(rawName)
     preferencesRepository.recordRecentWorkbook(safeName)
     val nextBookId = existingByUri?.id ?: "book_${nextWorkbookCounter++}"
@@ -1014,7 +1213,6 @@ fun MasuSheetViewModel.onOpenDocumentUri(uriString: String): Boolean {
     val newSid = existingByUri?.nativeSessionId?.takeIf { it > 0L }?.also { engineGateway.switchSession(it) }
         ?: engineGateway.createSession("blank")
     val snap = engineGateway.openWorkbookBytes(safeName, bytes).copy(sessionId = newSid)
-    val persistedOverlay = WorkbookXlsxObjectPersistence.extractFromXlsxBytes(bytes)
     val restoredObjects: List<NativeSheetObject>
     val restoredPivots: List<PivotTableDefinition>
     val restoredTabColors: Map<Int, Int>
@@ -1046,6 +1244,7 @@ fun MasuSheetViewModel.onOpenDocumentUri(uriString: String): Boolean {
     advanceObjectCounterPast(restoredObjects)
 
     _uiState.value = _uiState.value.copy(
+        isLoading = false,
         activeWorkbookId = nextBookId,
         workbookTitle = safeName,
         definedNames = finalViewport.definedNames.associate { it.name to it.refersTo },
@@ -1076,25 +1275,89 @@ fun MasuSheetViewModel.onOpenDocumentUri(uriString: String): Boolean {
     return true
 }
 
+fun MasuSheetViewModel.onOpenDocumentUri(uriString: String): Boolean {
+    val bytes = documentGateway.readBytes(uriString)
+    if (bytes == null || bytes.isEmpty()) {
+        _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "ファイルを読み込めませんでした")
+        return false
+    }
+    val rawName = documentGateway.resolveDisplayName(uriString)
+    val persistedOverlay = WorkbookXlsxObjectPersistence.extractFromXlsxBytes(bytes)
+    return applyLoadedDocumentBytes(uriString, bytes, rawName, persistedOverlay)
+}
+
 /**
- * [EN] ViewModel action/helper `onTriggerSave` handling trigger save while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTriggerSave` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Reads and extracts workbook bytes on `Dispatchers.IO` before updating the active session on the main thread.
+ * [JA] SAF／ローカルからのファイル読込およびオーバーレイ展開を `Dispatchers.IO` で非同期実行し、UIフリーズを防ぎます。
+ */
+fun MasuSheetViewModel.onOpenDocumentUriAsync(uriString: String) {
+    val existingDirty = _uiState.value.openWorkbooks.firstOrNull {
+        it.sourceUri.isNotBlank() && it.sourceUri == uriString &&
+            (it.viewportSnapshot.isDirty || (it.id == _uiState.value.activeWorkbookId && _uiState.value.isDirty))
+    }
+    if (existingDirty != null) {
+        onSwitchOpenWorkbook(existingDirty.id)
+        return
+    }
+    _uiState.value = _uiState.value.copy(isLoading = true)
+    viewModelScope.launch {
+        val loaded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val bytes = documentGateway.readBytes(uriString)
+            if (bytes == null || bytes.isEmpty()) {
+                null
+            } else {
+                val rawName = documentGateway.resolveDisplayName(uriString)
+                val overlay = WorkbookXlsxObjectPersistence.extractFromXlsxBytes(bytes)
+                Triple(bytes, rawName, overlay)
+            }
+        }
+        if (loaded == null) {
+            val isEn = _uiState.value.language == "en"
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                errorMessage = if (isEn) "Could not read workbook file" else "ファイルを読み込めませんでした"
+            )
+        } else {
+            applyLoadedDocumentBytes(uriString, loaded.first, loaded.second, loaded.third)
+        }
+    }
+}
+
+/**
+ * [EN] Opens the Save Dialog asynchronously for `.xlsx` export without blocking the UI thread.
+ * [JA] UIスレッドをブロックせずに `.xlsx` 保存ダイアログを開きます。
+ */
+fun MasuSheetViewModel.onTriggerSaveAsync() {
+    onOpenSaveDialogAsync("xlsx")
+}
+
+/**
+ * [EN] Opens the Save Dialog asynchronously for `.pdf` export without blocking the UI thread.
+ * [JA] UIスレッドをブロックせずに `.pdf` 出力ダイアログを開きます。
+ */
+fun MasuSheetViewModel.onTriggerExportPdfAsync() {
+    onOpenSaveDialogAsync("pdf")
+}
+
+/**
+ * [EN] Opens the Save Dialog for `.xlsx` with pre-built export bytes ready for immediate save.
+ * [JA] `.xlsx` 形式のエクスポートデータを準備した状態でファイル保存ダイアログを開きます。
  */
 fun MasuSheetViewModel.onTriggerSave() {
     onOpenSaveDialog("xlsx", prepareBytesImmediately = true)
 }
 
 /**
- * [EN] ViewModel action/helper `onTriggerExportPdf` handling trigger export pdf while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTriggerExportPdf` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Opens the Save Dialog configured for `.pdf` export with rendered PDF bytes ready.
+ * [JA] `.pdf` 形式の出力データを準備した状態でPDFエクスポート用保存ダイアログを開きます。
  */
 fun MasuSheetViewModel.onTriggerExportPdf() {
     onOpenSaveDialog("pdf", prepareBytesImmediately = true)
 }
 
 /**
- * [EN] ViewModel action/helper `onLoadSampleWorkbook` handling load sample workbook while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onLoadSampleWorkbook` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Loads a built-in sample workbook (`sales`, `budget`, `repair`, `inventory`, etc.) into a fresh open-workbook session tab.
+ * [JA] 指定された内蔵サンプルブック（売上・月間予算・修理依頼書など）を新しいブックセッションとして読み込みます。
  */
 fun MasuSheetViewModel.onLoadSampleWorkbook(sampleName: String) {
     val clean = sampleName.trim().lowercase().ifEmpty { "sales" }
@@ -1166,8 +1429,8 @@ fun MasuSheetViewModel.onLoadSampleWorkbook(sampleName: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onLoadNextSample` handling load next sample while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onLoadNextSample` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Cycles to the next built-in sample workbook template.
+ * [JA] 次の内蔵サンプルブックテンプレートへ順番に切り替えます。
  */
 fun MasuSheetViewModel.onLoadNextSample() {
     val next = WorkbookFormatClassifier.nextSampleWorkbook(_uiState.value.activeSample)
@@ -1175,16 +1438,16 @@ fun MasuSheetViewModel.onLoadNextSample() {
 }
 
 /**
- * [EN] ViewModel action/helper `onLoadRepairChecklistSample` handling load repair checklist sample while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onLoadRepairChecklistSample` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Loads the Japanese Equipment Repair Request (`修理依頼書.xlsx`) sample template.
+ * [JA] 「修理依頼書.xlsx」サンプルテンプレートを読み込みます。
  */
 fun MasuSheetViewModel.onLoadRepairChecklistSample() {
     onLoadSampleWorkbook("repair")
 }
 
 /**
- * [EN] ViewModel action/helper `onToggleLanguage` handling toggle language while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onToggleLanguage` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Switches UI language between Japanese (`ja`) and English (`en`), persisting the preference and translating default chart labels.
+ * [JA] アプリ表示言語を日本語（`ja`）と英語（`en`）の間で切り替え、設定保存と標準グラフラベルの翻訳を行います。
  */
 fun MasuSheetViewModel.onToggleLanguage() {
     val nextLang = if (_uiState.value.language == "ja") "en" else "ja"
@@ -1211,8 +1474,8 @@ fun MasuSheetViewModel.onToggleLanguage() {
 }
 
 /**
- * [EN] ViewModel action/helper `onToggleDarkTheme` handling toggle dark theme while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onToggleDarkTheme` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Switches between Light Mode and Dark Mode, persisting the theme preference and syncing the native engine viewport theme.
+ * [JA] ライトモードとダークモードを切り替え、設定の永続化とエンジン側のテーマ同期を行います。
  */
 fun MasuSheetViewModel.onToggleDarkTheme() {
     val nextDark = !_uiState.value.isDarkTheme
@@ -1223,8 +1486,8 @@ fun MasuSheetViewModel.onToggleDarkTheme() {
 }
 
 /**
- * [EN] ViewModel action/helper `onToggleMaterial3Ui` handling toggle material3 ui while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onToggleMaterial3Ui` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Switches ribbon chrome between Modern Material 3 UI (`isMaterial3Ui = true`) and Classic Desktop Ribbon UI (`false`).
+ * [JA] リボン外観を「Material 3 モダンUI」と「クラシック・デスクトップリボンUI」の間で切り替えます。
  */
 fun MasuSheetViewModel.onToggleMaterial3Ui() {
     val nextM3 = !_uiState.value.isMaterial3Ui
@@ -1249,8 +1512,8 @@ fun MasuSheetViewModel.onToggleMaterial3Ui() {
 }
 
 /**
- * [EN] ViewModel action/helper `onCycleZoom` handling cycle zoom while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onCycleZoom` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Cycles sheet zoom percentage through `100% -> 125% -> 150% -> 100%`.
+ * [JA] シートの表示倍率を `100% → 125% → 150% → 100%` の順で切り替えます。
  */
 fun MasuSheetViewModel.onCycleZoom() {
     val nextZoom = when (_uiState.value.zoomPercent) {
@@ -1262,8 +1525,8 @@ fun MasuSheetViewModel.onCycleZoom() {
 }
 
 /**
- * [EN] ViewModel action/helper `onSetZoomPercent` handling set zoom percent while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSetZoomPercent` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Clamps sheet zoom to `25%..400%`, updates `MasuSheetUiState.zoomPercent`, and optionally persists the zoom level.
+ * [JA] シート表示倍率を `25%..400%` の範囲にクランプして反映し、必要に応じ設定へ永続化します。
  */
 fun MasuSheetViewModel.onSetZoomPercent(percent: Int, persistPreference: Boolean = true) {
     val clamped = percent.coerceIn(25, 400)
@@ -1280,8 +1543,8 @@ fun MasuSheetViewModel.onSetZoomPercent(percent: Int, persistPreference: Boolean
 }
 
 /**
- * [EN] ViewModel action/helper `onOpenZoomDialog` handling open zoom dialog while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onOpenZoomDialog` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Opens or closes the Zoom preset & custom percentage dialog.
+ * [JA] 表示倍率（ズーム）選択・カスタム指定ダイアログを開閉します。
  */
 fun MasuSheetViewModel.onOpenZoomDialog(open: Boolean = true) {
     _uiState.value = _uiState.value.copy(isZoomDialogOpen = open)
@@ -1315,16 +1578,16 @@ fun MasuSheetViewModel.onFitZoomToSelection(viewportWidthPt: Float = 560f, viewp
 }
 
 /**
- * [EN] ViewModel action/helper `onToggleToolbar` handling toggle toolbar while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onToggleToolbar` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Shows or hides the entire top Ribbon and Quick Access bar so maximum screen area is dedicated to the grid.
+ * [JA] 上部リボンおよびクイックアクセスバー全体の表示／非表示を切り替え、シート表示領域を最大化します。
  */
 fun MasuSheetViewModel.onToggleToolbar() {
     _uiState.value = _uiState.value.copy(toolbarVisible = !_uiState.value.toolbarVisible)
 }
 
 /**
- * [EN] ViewModel action/helper `onEngineError` handling engine error while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onEngineError` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Clears loading state and surfaces a human-readable engine error message banner.
+ * [JA] ローディング状態を解除し、エンジンエラーメッセージをエラーバナーへ表示します。
  */
 fun MasuSheetViewModel.onEngineError(error: String) {
     _uiState.value = _uiState.value.copy(
@@ -1334,8 +1597,8 @@ fun MasuSheetViewModel.onEngineError(error: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onDismissError` handling dismiss error while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDismissError` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Clears the currently displayed error banner message.
+ * [JA] 表示中のエラーバナーメッセージを閉じます。
  */
 fun MasuSheetViewModel.onDismissError() {
     _uiState.value = _uiState.value.copy(errorMessage = null)
@@ -1344,8 +1607,8 @@ fun MasuSheetViewModel.onDismissError() {
 // --- Spreadsheet Color Picker & Theme System ---
 
 /**
- * [EN] ViewModel action/helper `onRecordRecentColor` handling record recent color while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onRecordRecentColor` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Pushes non-transparent `argb` onto the persisted MRU recent-colors palette.
+ * [JA] 選択された色（`argb != 0`）を「最近使った色」履歴へ記録・永続化します。
  */
 fun MasuSheetViewModel.onRecordRecentColor(argb: Int) {
     if (argb != 0) {
@@ -1355,8 +1618,8 @@ fun MasuSheetViewModel.onRecordRecentColor(argb: Int) {
 }
 
 /**
- * Applies a color (`argb`, where `0` = No Fill / Automatic) to the specified target:
- * `"fill"`, `"font"`, `"border"`, `"objectFill"`, `"objectStroke"`, `"objectText"`, `"chartSeries"`, or `"sheetTab"`.
+ * [EN] Applies `argb` (`0` = No Fill / Automatic) to the requested target (`fill`, `font`, `border`, `objectFill`, `objectStroke`, `objectText`, `chartSeries`, or `sheetTab`).
+ * [JA] カラーピッカーで選択された色 `argb`（`0` は塗りつぶしなし／自動）をセル背景・文字・罫線・図形・グラフ系列・シートタブ等の対象へ適用します。
  */
 fun MasuSheetViewModel.onApplyPickedColor(target: String, argb: Int, sheetIndex: Int = _uiState.value.viewport.sheetIndex) {
     onRecordRecentColor(argb)
@@ -1411,8 +1674,8 @@ fun MasuSheetViewModel.onApplyPickedColor(target: String, argb: Int, sheetIndex:
 }
 
 /**
- * [EN] ViewModel action/helper `onApplyThemePreset` handling apply theme preset while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onApplyThemePreset` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Applies a 12-color workbook theme palette preset (`Standard`, `Emerald`, `Ocean`, `Sunset`, `Monochrome`, etc.) to both engine and UI.
+ * [JA] 選択された12色テーマカラープリセットをエンジンおよびUIカラーパレットへ適用します。
  */
 fun MasuSheetViewModel.onApplyThemePreset(presetName: String) {
     val baseColors = SpreadsheetColorPalette.THEME_PRESETS[presetName] ?: SpreadsheetColorPalette.DEFAULT_THEME_BASE_COLORS
@@ -1440,9 +1703,22 @@ fun MasuSheetViewModel.onApplyThemePreset(presetName: String) {
         }
     }
     sizeRevisionBump++
+    val isEn = _uiState.value.language == "en"
     _uiState.value = _uiState.value.copy(
         viewport = _uiState.value.viewport.copy(themeColors = baseColors),
         sheetObjects = updatedObjs,
-        statusNoticeMessage = "テーマ配色「$presetName」を適用しました"
+        statusNoticeMessage = if (isEn) {
+            "Applied theme palette '${SpreadsheetI18n.t(presetName, isEn = true)}'"
+        } else {
+            "テーマ配色「$presetName」を適用しました"
+        }
     )
+}
+
+/**
+ * [EN] Opens or closes the in-app About & Open Source Licenses dialog (`assets/licenses/`).
+ * [JA] アプリ同梱のOSSライセンス・著作権表示ダイアログ（`assets/licenses/`）を開閉します。
+ */
+fun MasuSheetViewModel.onOpenLicensesDialog(open: Boolean = true) {
+    _uiState.value = _uiState.value.copy(isOpenSourceLicensesDialogOpen = open)
 }

@@ -1,26 +1,9 @@
-package com.masusheet.app
+package com.masusheet.app.canvas
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
-import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.text.Editable
@@ -29,14 +12,9 @@ import android.text.Spannable
 import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
 import android.util.TypedValue
-import android.view.GestureDetector
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.MotionEvent
-import android.view.PointerIcon
-import android.view.VelocityTracker
 import android.view.View
-import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -45,100 +23,41 @@ import android.view.inputmethod.InputContentInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.OverScroller
 import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContract
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerHoverIcon
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.hypot
+import com.masusheet.app.R
+import com.masusheet.app.core.FormulaPointModeHelper
+import com.masusheet.app.core.InlineCheckboxHelper
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeCellModel
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.ui.copyImageBytesToSystemClipboard
+import com.masusheet.app.ui.copyToSystemClipboard
+import com.masusheet.app.ui.lastReceivedClipboardImage
+import com.masusheet.app.ui.readFromSystemClipboard
+import com.masusheet.app.ui.readImageBytesFromSystemClipboard
+import com.masusheet.app.ui.readImageBytesFromUri
+import com.masusheet.app.viewmodel.MasuSheetViewModel
+import com.masusheet.app.viewmodel.computeColumnAutoCompleteSuggestion
+import com.masusheet.app.viewmodel.onCopySelectedSheetObjectsAsCombinedImage
+import com.masusheet.app.viewmodel.onInsertImageBytes
+import com.masusheet.app.viewmodel.onUpdateChartCategoryLabel
+import com.masusheet.app.viewmodel.onUpdateChartDataValue
+import com.masusheet.app.viewmodel.onUpdateChartSeriesName
+import com.masusheet.app.viewmodel.onUpdateSheetObjectText
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /**
  * ============================================================================
@@ -390,8 +309,8 @@ class MasuSheetNativeSheetContainer(
     }
 
     /**
-     * Prevents Android's focusSearch(FOCUS_DOWN) on Enter key release from moving focus out of the
-     * sheet container onto the bottom Compose Sheet Tabs bar, while delegating unrelated focus searches cleanly (H-13).
+     * [EN] Keeps Android keyboard focus anchored inside `inCellEditText` when pressing `Enter` so focus does not jump down to the Compose sheet-tab bar.
+     * [JA] `Enter` キー確定時に Android のフォーカス探索が下部シートタブバーへ逃げるのを防ぎ、セル入力エディタにフォーカスを維持します。
      */
     override fun focusSearch(focused: View?, direction: Int): View? {
         if (focused == null || focused == inCellEditText || focused == gridView || isEditingInCell) {
@@ -617,9 +536,8 @@ class MasuSheetNativeSheetContainer(
     }
 
     /**
-     * Intercepts Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+Z, Ctrl+Y and navigation/commit keys (Enter, Tab, Escape, Arrows, Delete)
-     * cleanly at the container level, consuming BOTH ACTION_DOWN and ACTION_UP so EditText.onKeyUp never triggers
-     * focusSearch(FOCUS_DOWN) or unwanted paste promotion in standby mode.
+     * [EN] Intercepts hardware keyboard shortcuts (`Ctrl+C/X/V/Z/Y`) and grid navigation/commit keys (`Enter`, `Tab`, `Esc`, arrows, `Delete`, `F2`, `F4`) cleanly across `ACTION_DOWN`/`UP`.
+     * [JA] ハードウェアキーボードのショートカット（`Ctrl+C/X/V/Z/Y`）およびセル移動・確定キー（`Enter`・`Tab`・矢印・`Delete`・`F2`・`F4`）を一元処理します。
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
@@ -846,9 +764,8 @@ class MasuSheetNativeSheetContainer(
     }
 
     /**
-     * Positions [inCellEditText] and [contextMenuScrollView] directly using `measure` + `layout`
-     * without reassigning `layoutParams` or calling `requestLayout()`.
-     * This guarantees Compose's `AndroidViewHolder` never blanks out in Dark Mode during key/clipboard events!
+     * [EN] Measures and positions `inCellEditText` and `contextMenuScrollView` directly without `requestLayout()`, preventing `AndroidView` flicker in Dark Mode.
+     * [JA] `requestLayout()` を呼ばずにセル内エディタとコンテキストメニューを直接 `measure`/`layout` 配置し、ダークモード時の画面ちらつきを防ぎます。
      */
     internal fun layoutChildrenInPlace() {
         val ew = editorWidthPx.coerceAtLeast(1)
@@ -953,8 +870,8 @@ class MasuSheetNativeSheetContainer(
     }
 
     /**
-     * Promotes `inCellEditText` from 1x1 invisible standby mode to an active visible cell editor
-     * on the currently selected cell without losing the character(s) or IME composition the user just typed!
+     * [EN] Promotes `inCellEditText` from its 1×1 invisible standby state into a visible active-cell editor while preserving newly typed characters and IME composition.
+     * [JA] 待機中の1×1不可視エディタを入力開始と同時に選択セル上の可視エディタへ昇格させ、最初の打鍵や日本語IME変換状態を欠落なく引き継ぎます。
      */
     internal fun promoteStandbyToDirectCellEditor() {
         val snap = gridView.currentViewport
@@ -987,8 +904,8 @@ class MasuSheetNativeSheetContainer(
     }
 
     /**
-     * Starts direct typing on the currently selected cell with [initialTypedText] (replacing prior cell contents,
-     * just like typing on a selected cell in Spreadsheet/MasuSheet).
+     * [EN] Opens the in-cell editor on the active cell (resolving merge anchors) initialized with `initialTypedText`.
+     * [JA] 結合セルのアンカーを解決した上でアクティブセル上にセル内エディタを開き、`initialTypedText` を初期入力としてセットします。
      */
     fun startDirectTypingWithText(initialTypedText: String, requestEditorFocus: Boolean = true) {
         if (isContextMenuVisible) dismissContextMenu()
@@ -1037,8 +954,8 @@ class MasuSheetNativeSheetContainer(
     }
 
     /**
-     * Opens [inCellEditText] directly in-place over a Shape, TextBox, or Chart text element!
-     * No top-left bar is used — the cursor appears directly inside the double-clicked object or chart label on the canvas.
+     * [EN] Opens `inCellEditText` directly over a double-tapped shape, text box, or chart text element for seamless in-place editing.
+     * [JA] ダブルタップされた図形・テキストボックス・グラフ内ラベルの画面座標上に直接エディタを重ねてインプレース編集を開始します。
      */
     fun openInObjectEditor(
         obj: NativeSheetObject,

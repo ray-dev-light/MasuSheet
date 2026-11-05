@@ -1,23 +1,4 @@
-package com.masusheet.app
-
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.util.Base64
-import kotlin.math.roundToInt
+package com.masusheet.app.core
 
 /**
  * ============================================================================
@@ -55,8 +36,8 @@ data class FormulaRefHighlight(
 )
 
 /**
- * Ports original Rust MasuSheet's formula Point Mode & colored reference highlighting (`crates/ui-egui/src/editor.rs` & `formula_bar.rs`)
- * to the native Android sheet canvas and in-cell / formula-bar editors.
+ * [EN] Provides formula Point Mode parsing, `F4` absolute/relative `$` anchor cycling, Japanese full-width operator normalization, and 8-color reference extraction.
+ * [JA] 数式入力中のセル参照ポイントモード判定、`F4` キーによる絶対／相対参照 (`$`) 切替、全角演算子正規化、8色参照ハイライト抽出を担うヘルパーです。
  */
 object FormulaPointModeHelper {
 
@@ -82,8 +63,8 @@ object FormulaPointModeHelper {
     }
 
     /**
-     * Normalizes full-width leading `＝` and formula operators outside string literals so Japanese IME input works seamlessly.
-     * Also prevents committing a bare `"="` with no expression after it (which would otherwise produce `#ERROR!`).
+     * [EN] Normalizes full-width leading `＝` and unquoted full-width operators for Japanese IME usability, and converts a bare `"="` into `""` to avoid `#ERROR!`.
+     * [JA] 先頭の全角 `＝` や文字列リテラル外の全角演算子を半角へ正規化し、`=` のみの空数式による `#ERROR!` 発生を防止します。
      */
     fun normalizeCommittedFormula(text: String): String {
         val trimmed = text.trim()
@@ -143,8 +124,8 @@ object FormulaPointModeHelper {
     }
 
     /**
-     * Returns true when clicking or dragging a cell/range/column/row on the grid should insert or replace a cell reference
-     * at [caretIndex] instead of committing and closing the editor (ported from `EditState::can_point` in `crates/ui-egui/src/editor.rs`).
+     * [EN] Returns `true` when tapping/dragging cells on the grid should insert or replace a formula reference at `caretIndex` instead of committing the edit.
+     * [JA] 数式編集中にグリッド上のセルをタップ／ドラッグした際、編集確定ではなく `caretIndex` 位置へのセル参照挿入（ポイントモード）を行うべきかを判定します。
      */
     fun canPoint(
         text: String,
@@ -170,8 +151,8 @@ object FormulaPointModeHelper {
     }
 
     /**
-     * Inserts [newRef] at [caretIndex], or replaces [activePointSpan] if one is active at [caretIndex]
-     * (ported from `EditState::insert_ref` in `crates/ui-egui/src/editor.rs`).
+     * [EN] Inserts `newRef` at `caretIndex` (or replaces `activePointSpan` during live drag selection) inside a formula string.
+     * [JA] 数式文字列内の `caretIndex` 位置にセル参照 `newRef` を挿入、またはドラッグ中の既存ポイント範囲 `activePointSpan` を置換します。
      */
     fun insertOrReplaceRef(
         text: String,
@@ -207,8 +188,8 @@ object FormulaPointModeHelper {
     }
 
     /**
-     * Appends `,newRef` at [caretIndex] for Ctrl+Click union selection in Point Mode
-     * (ported from `EditState::append_ref` in `crates/ui-egui/src/editor.rs`).
+     * [EN] Appends `,newRef` at `caretIndex` for multi-range (`Ctrl`+Click) argument selection in Formula Point Mode.
+     * [JA] 数式ポイントモードでの `Ctrl`+クリック複数範囲選択時に、カンマ区切りで `,newRef` を連結挿入します。
      */
     fun appendUnionRef(
         text: String,
@@ -301,8 +282,8 @@ object FormulaPointModeHelper {
     }
 
     /**
-     * Cycles absolute/relative `$` anchors on the cell/range reference at [caretIndex] when F4 is pressed:
-     * `A1` -> `$A$1` -> `A$1` -> `$A1` -> `A1` (ported from `formula_bar::cycle_anchor` in `crates/ui-egui/src/formula_bar.rs`).
+     * [EN] Cycles `$` anchors on the cell or range token at `caretIndex` (`A1` -> `$A$1` -> `A$1` -> `$A1` -> `A1`) when `F4` is pressed.
+     * [JA] `F4` キー押下時にカーソル位置のセル／範囲参照の絶対・相対指定を `A1` → `$A$1` → `A$1` → `$A1` → `A1` の順で循環させます。
      */
     fun cycleAbsoluteRelativeAtCaret(text: String, caretIndex: Int = text.length): Pair<String, Int> {
         if (!isFormulaText(text)) return text to caretIndex
@@ -358,8 +339,8 @@ object FormulaPointModeHelper {
     }
 
     /**
-     * Extracts all cell, range, column-range, and row-range references in [text] along with their 8-color cycle
-     * (ported from `editor::formula_refs` in `crates/ui-egui/src/editor.rs`).
+     * [EN] Extracts all unquoted cell, range, row, and column references from a formula along with their assigned 8-color highlight palette entries.
+     * [JA] 数式文字列から引用符外のセル・範囲・行・列参照をすべて抽出し、8色サイクルのハイライト色を割り当てたリストを返します。
      */
     fun extractFormulaReferences(
         text: String,

@@ -1,30 +1,23 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.Base64
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.ChartSeries
+import com.masusheet.app.model.CustomCellStyleOverride
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeCellModel
+import com.masusheet.app.model.NativeMergeRange
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.NativeValidationModel
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.model.PivotAggFunction
+import com.masusheet.app.model.PivotTableDefinition
+import com.masusheet.app.model.PivotValueFieldSpec
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.model.TableColumnFilterPopupState
+import com.masusheet.app.ui.dialogs.SpreadsheetColumnFilterPopupDialog
 import kotlin.math.abs
-import kotlin.math.roundToInt
-import com.masusheet.app.MasuSheetViewModel.*
+import org.json.JSONObject
 
 /**
  * ============================================================================
@@ -38,8 +31,8 @@ import com.masusheet.app.MasuSheetViewModel.*
  */
 
 /**
- * [EN] ViewModel action/helper `populateMonthlyBudgetSheet` handling populate monthly budget sheet while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `populateMonthlyBudgetSheet` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Populates the localized Monthly Budget (`月間予算`) sample template with formulas, currency formats, summary cards, and comparison charts.
+ * [JA] 「月間予算」サンプルテンプレートの見出し・数式・通貨書式・集計テーブル・予算実績グラフを指定シートに構築します。
  */
 fun MasuSheetViewModel.populateMonthlyBudgetSheet(sheetIndex: Int, attachChartsImmediately: Boolean = true): NativeViewportSnapshot {
     customSheetMerges[sheetIndex] = listOf(NativeMergeRange(0, 0, 0, 5))
@@ -265,8 +258,8 @@ fun MasuSheetViewModel.populateMonthlyBudgetSheet(sheetIndex: Int, attachChartsI
 }
 
 /**
- * [EN] ViewModel action/helper `ensureMonthlyBudgetCharts` handling ensure monthly budget charts while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `ensureMonthlyBudgetCharts` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Attaches the default Budget vs. Actual column chart and category breakdown pie chart to `sheetIndex` if not yet materialized.
+ * [JA] 月間予算シートに「予算 vs 実績」縦棒グラフと「カテゴリ別実績構成比」円グラフが未生成の場合に初期配置します。
  */
 internal fun MasuSheetViewModel.ensureMonthlyBudgetCharts(sheetIndex: Int) {
     val matKey = "${_uiState.value.activeWorkbookId}:monthly_budget:$sheetIndex"
@@ -328,10 +321,8 @@ internal fun MasuSheetViewModel.ensureMonthlyBudgetCharts(sheetIndex: Int) {
 }
 
 /**
- * Toggles AutoFilter (`data.filter` / `tableDesign.filterButton`) strictly on the selected non-empty table.
- * - Never jumps from an empty nearby cell onto an adjacent block of numbers.
- * - Stores the exact header row & column span in `autoFilterRanges[sheetIndex]` so typing `1, 2, 3` in other cells
- *   while AutoFilter is ON never turns those cells into `[▾]` filter headers.
+ * [EN] Enables or clears AutoFilter `[▾]` headers strictly on the selected non-empty table, restoring any filtered-out rows when turned off.
+ * [JA] 選択中の非空データ表に対してオートフィルター `[▾]` のON/OFFを切り替え、解除時には非表示行をすべて復元します。
  */
 fun MasuSheetViewModel.onToggleAutoFilter() {
     val cur = _uiState.value
@@ -556,9 +547,8 @@ fun MasuSheetViewModel.onAutoFillRange(
 }
 
 /**
- * A5: Double-clicking / double-tapping the AutoFill corner handle automatically fills down
- * to match the last contiguous non-empty row in the adjacent left (`c0 - 1`) or right (`c1 + 1`) column,
- * ported directly from `crates/ui-egui/src/interact.rs:169-186`.
+ * [EN] Fills the current selection downward to match the last contiguous populated row of adjacent left/right columns when double-tapping the fill handle.
+ * [JA] 選択枠右下のフィルハンドルをダブルタップした際、隣接する左右列の最終データ行までオートフィルを自動延長します。
  */
 fun MasuSheetViewModel.onDoubleTapAutoFillCornerHandle(): Int {
     val vp = _uiState.value.viewport
@@ -595,8 +585,8 @@ fun MasuSheetViewModel.onDoubleTapAutoFillCornerHandle(): Int {
 }
 
 /**
- * A7: Dragging the selection border moves the selected cell range `(srcStartRow..srcEndRow, srcStartCol..srcEndCol)`
- * to `(destStartRow, destStartCol)` (ported from `crates/ui-egui/src/interact.rs:457-459` `Drag::Move`).
+ * [EN] Moves cell contents and custom styles from `(srcStartRow..srcEndRow, srcStartCol..srcEndCol)` to `(destStartRow, destStartCol)` via border drag.
+ * [JA] 選択枠の境界ドラッグ操作により、選択セル範囲の値・数式・カスタム書式を移動先 `(destStartRow, destStartCol)` へ移動します。
  */
 fun MasuSheetViewModel.onMoveSelectionRange(
     srcStartRow: Int,
@@ -686,8 +676,8 @@ fun MasuSheetViewModel.onMoveSelectionRange(
 }
 
 /**
- * A8: Reorders columns `[startCol..endCol]` so they are inserted before `targetBeforeCol`
- * (`sheet.moveColumns` in `crates/ui-egui/src/interact.rs:316-325` `Drag::MoveCols`).
+ * [EN] Reorders columns `startCol..endCol` to appear immediately before `targetBeforeCol`, remapping custom column widths in tandem.
+ * [JA] 列範囲 `startCol..endCol` を `targetBeforeCol` の手前へ並び替え移動し、カスタム列幅設定も追従させます。
  */
 fun MasuSheetViewModel.onMoveColumns(startCol: Int, endCol: Int, targetBeforeCol: Int): Boolean {
     val c0 = minOf(startCol, endCol).coerceAtLeast(0)
@@ -753,8 +743,8 @@ fun MasuSheetViewModel.onMoveColumns(startCol: Int, endCol: Int, targetBeforeCol
 }
 
 /**
- * A9: Computes same-column plain-text AutoComplete suggestion when typing into `(row, col)`
- * (ported from `crates/ui-egui/src/editor.rs:301-327`).
+ * [EN] Computes a same-column plain-text AutoComplete completion for the active cell based on `typedPrefix`.
+ * [JA] アクティブセルと同じ列の入力済み文字列から、`typedPrefix` に前方一致するオートコンプリート候補を返します。
  */
 fun MasuSheetViewModel.computeColumnAutoCompleteSuggestion(typedPrefix: String): String? =
     computeColumnAutoCompleteSuggestion(
@@ -764,8 +754,8 @@ fun MasuSheetViewModel.computeColumnAutoCompleteSuggestion(typedPrefix: String):
     )
 
 /**
- * [EN] ViewModel action/helper `computeColumnAutoCompleteSuggestion` handling compute column auto complete suggestion while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `computeColumnAutoCompleteSuggestion` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Scans populated non-numeric text cells in column `col` to suggest a unique case-insensitive prefix completion for `typedPrefix`.
+ * [JA] 同じ列 `col` 内の既存テキストセルを走査し、入力途中の `typedPrefix` に対する補完候補文字列を算出します。
  */
 fun MasuSheetViewModel.computeColumnAutoCompleteSuggestion(row: Int, col: Int, typedPrefix: String): String? {
     val prefix = typedPrefix.trim()
@@ -796,7 +786,8 @@ fun MasuSheetViewModel.computeColumnAutoCompleteSuggestion(row: Int, col: Int, t
 }
 
 /**
- * A10: Returns the Data Validation rule covering the active cell (or `(row, col)`), if any.
+ * [EN] Returns the `NativeValidationModel` rule governing `(row, col)` (defaulting to the active cell), or `null` if unconstrained.
+ * [JA] 指定セル `(row, col)`（既定はアクティブセル）に適用されているデータの入力規則モデルを返します。
  */
 fun MasuSheetViewModel.getActiveCellValidation(
     row: Int = _uiState.value.viewport.activeRow,
@@ -806,8 +797,8 @@ fun MasuSheetViewModel.getActiveCellValidation(
 }
 
 /**
- * [EN] ViewModel action/helper `onApplyDataValidation` handling apply data validation while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onApplyDataValidation` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Applies or clears (`clearRule = true`) a Data Validation rule (`list`, `whole`, `decimal`, `textLength`, etc.) on the target range.
+ * [JA] 対象セル範囲にデータの入力規則（リスト・整数・小数・文字列長など）を適用、または `clearRule = true` で解除します。
  */
 fun MasuSheetViewModel.onApplyDataValidation(
     kind: String = "list",
@@ -895,8 +886,8 @@ fun MasuSheetViewModel.onApplyDataValidation(
 }
 
 /**
- * [EN] ViewModel action/helper `onSelectValidationListItem` handling select validation list item while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSelectValidationListItem` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Commits `item` chosen from an in-cell Data Validation dropdown list into the active cell.
+ * [JA] セル内ドロップダウンリストから選択された項目 `item` をアクティブセルの値として確定入力します。
  */
 fun MasuSheetViewModel.onSelectValidationListItem(item: String) {
     val vp = _uiState.value.viewport
@@ -904,8 +895,8 @@ fun MasuSheetViewModel.onSelectValidationListItem(item: String) {
 }
 
 /**
- * A11: Updates freeze pane boundaries by dragging the freeze divider lines directly on the grid/headers
- * (`crates/ui-egui/src/interact.rs:371-375` `Drag::Freeze`).
+ * [EN] Updates frozen top rows (`newFreezeRows`) and left columns (`newFreezeCols`) when dragging freeze divider lines on the grid.
+ * [JA] グリッド上の固定枠線ドラッグ操作に応じて、固定行数 (`newFreezeRows`) と固定列数 (`newFreezeCols`) を更新します。
  */
 fun MasuSheetViewModel.onDragFreezePaneBoundary(newFreezeRows: Int, newFreezeCols: Int) {
     val r = newFreezeRows.coerceAtLeast(0)
@@ -941,7 +932,8 @@ fun MasuSheetViewModel.onDragFreezePaneBoundary(newFreezeRows: Int, newFreezeCol
 }
 
 /**
- * A12: Hides or unhides columns/rows (`crates/ui-egui/src/interact.rs:264-270`).
+ * [EN] Hides the currently selected column span (`selStartCol..selEndCol`) with Undo support.
+ * [JA] 現在選択されている列範囲（`selStartCol..selEndCol`）を非表示にします（Undo対応）。
  */
 fun MasuSheetViewModel.onHideSelectedColumns() {
     pushCustomOverlayUndoSnapshot()
@@ -964,8 +956,8 @@ fun MasuSheetViewModel.onHideSelectedColumns() {
 }
 
 /**
- * [EN] ViewModel action/helper `onUnhideColumnsAround` handling unhide columns around while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onUnhideColumnsAround` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Restores any hidden columns adjacent to `col` (`col - 1..col + 1`) back to standard width.
+ * [JA] 指定列 `col` の前後（`col - 1..col + 1`）にある非表示列を再表示して標準幅へ戻します。
  */
 fun MasuSheetViewModel.onUnhideColumnsAround(col: Int) {
     pushCustomOverlayUndoSnapshot()
@@ -988,8 +980,8 @@ fun MasuSheetViewModel.onUnhideColumnsAround(col: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onHideSelectedRows` handling hide selected rows while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onHideSelectedRows` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Hides the currently selected row span (`selStartRow..selEndRow`) with Undo support.
+ * [JA] 現在選択されている行範囲（`selStartRow..selEndRow`）を非表示にします（Undo対応）。
  */
 fun MasuSheetViewModel.onHideSelectedRows() {
     pushCustomOverlayUndoSnapshot()
@@ -1012,8 +1004,8 @@ fun MasuSheetViewModel.onHideSelectedRows() {
 }
 
 /**
- * [EN] ViewModel action/helper `onUnhideRowsAround` handling unhide rows around while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onUnhideRowsAround` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Restores any hidden rows adjacent to `row` (`row - 1..row + 1`) back to standard height.
+ * [JA] 指定行 `row` の前後（`row - 1..row + 1`）にある非表示行を再表示して標準行高へ戻します。
  */
 fun MasuSheetViewModel.onUnhideRowsAround(row: Int) {
     pushCustomOverlayUndoSnapshot()
@@ -1036,8 +1028,8 @@ fun MasuSheetViewModel.onUnhideRowsAround(row: Int) {
 }
 
 /**
- * A13: Inserts an in-cell Sparkline (`line`, `column`, `winloss`) into `locationCell` from `sourceRange`
- * (`crates/ui-egui/src/quadrant.rs:605-625`).
+ * [EN] Inserts an in-cell sparkline (`line`, `column`, or `winloss`) into `locationCell` bound to `sourceRange`.
+ * [JA] 元データ範囲 `sourceRange` に連動するセル内スパークライン（折れ線・縦棒・勝敗）を `locationCell` に挿入します。
  */
 fun MasuSheetViewModel.onInsertSparkline(
     sourceRange: String = "",
@@ -1089,8 +1081,8 @@ fun MasuSheetViewModel.onInsertSparkline(
 }
 
 /**
- * Computes live preview values `Map<Pair<Int, Int>, String>` for every target cell that will be overwritten
- * if the user releases the AutoFill drag at `(targetEndRow, targetEndCol)`.
+ * [EN] Computes live preview strings `Map<(row, col), previewText>` for every target cell covered during an active AutoFill drag.
+ * [JA] オートフィルハンドルのドラッグ中に、上書き対象となる各セル `(row, col)` のリアルタイム予測文字列マップを算出します。
  */
 fun MasuSheetViewModel.previewAutoFillCells(
     srcStartRow: Int,
@@ -1182,8 +1174,8 @@ fun MasuSheetViewModel.previewAutoFillCells(
 }
 
 /**
- * [EN] ViewModel action/helper `parsePureAutoFillNumber` handling parse pure auto fill number while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `parsePureAutoFillNumber` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Parses a non-formula numeric literal cell into `Double` for linear arithmetic progression detection during AutoFill.
+ * [JA] オートフィルの等差数列判定用に、数式ではない純粋な数値セルを `Double` として読み取ります。
  */
 internal fun MasuSheetViewModel.parsePureAutoFillNumber(cell: NativeCellModel?): Double? {
     if (cell == null) return null
@@ -1193,7 +1185,8 @@ internal fun MasuSheetViewModel.parsePureAutoFillNumber(cell: NativeCellModel?):
 }
 
 /**
- * Computes the generated cell input string for AutoFill at `step` (`+1, +2, +3...` for forward, `-1, -2...` for backward).
+ * [EN] Generates the filled cell text/formula at `step` from `laneCells` (shifting relative refs, extending weekday/month names, numbered labels, or arithmetic series).
+ * [JA] 元セル列 `laneCells` から `step` 番目のフィル値を生成します（相対数式シフト、曜日・月名循環、連番テキスト、最小二乗等差数列に対応）。
  */
 fun MasuSheetViewModel.computeSmartAutoFillItem(
     laneCells: List<NativeCellModel>,
@@ -1477,9 +1470,8 @@ fun MasuSheetViewModel.detectTableBoundsAt(vp: NativeViewportSnapshot, row: Int,
 }
 
 /**
- * Returns true if `(row, col)` is a table header cell that displays an interactive `[▾]` AutoFilter & Sort button.
- * Uses `autoFilterRanges[sheetIndex]` for user-toggled AutoFilters so typing numbers (`1, 2, 3`) in other cells
- * while AutoFilter is ON never turns those cells into `[▾]` filter headers.
+ * [EN] Returns `true` when `(row, col)` belongs to an active AutoFilter header span and should render an interactive `[▾]` filter button.
+ * [JA] セル `(row, col)` が有効なオートフィルター見出し行に含まれ、`[▾]` フィルターボタンを描画すべきかを判定します。
  */
 fun MasuSheetViewModel.isTableHeaderCell(vp: NativeViewportSnapshot, row: Int, col: Int): Boolean {
     val cellTxt = vp.cellAt(row, col)?.displayText?.trim().orEmpty()
@@ -1499,7 +1491,8 @@ fun MasuSheetViewModel.isTableHeaderCell(vp: NativeViewportSnapshot, row: Int, c
 }
 
 /**
- * Opens the Windows 11 Spreadsheet AutoFilter & Sort popup menu (`SpreadsheetColumnFilterPopupDialog`) for column `col`.
+ * [EN] Collects distinct values and active filter state for column `col` in the table at `(row, col)` and opens `SpreadsheetColumnFilterPopupDialog`.
+ * [JA] 対象テーブルの列 `col` に含まれるユニーク値一覧と現在の絞り込み条件を収集し、列フィルター＆並べ替えポップアップを開きます。
  */
 fun MasuSheetViewModel.onOpenColumnFilterMenu(row: Int, col: Int) {
     val cur = _uiState.value
@@ -1570,8 +1563,8 @@ fun MasuSheetViewModel.onOpenColumnFilterMenu(row: Int, col: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onDismissColumnFilterMenu` handling dismiss column filter menu while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDismissColumnFilterMenu` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Closes the active column AutoFilter & Sort popup dialog.
+ * [JA] 表示中の列オートフィルター＆並べ替えポップアップを閉じます。
  */
 fun MasuSheetViewModel.onDismissColumnFilterMenu() {
     _uiState.value = _uiState.value.copy(activeColumnFilterPopup = null)
@@ -1715,16 +1708,16 @@ fun MasuSheetViewModel.onSortTableByColumn(col: Int, ascending: Boolean) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSortTableByColor` handling sort table by color while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSortTableByColor` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Sorts the active table by column `col` (delegating to ascending column sort).
+ * [JA] 対象列 `col` を基準にテーブル行の並べ替えを実行します。
  */
 fun MasuSheetViewModel.onSortTableByColor(col: Int) {
     onSortTableByColumn(col, ascending = true)
 }
 
 /**
- * Applies the checked value filter (and optional custom text/number operator filter) on column `col`,
- * collapsing non-matching rows in the table and updating the column's `[▾]` header badge.
+ * [EN] Applies checked-value and optional custom operator filtering on column `col`, hiding non-matching table rows while preserving footer totals.
+ * [JA] 列 `col` にチェック選択値およびカスタム条件フィルターを適用し、合計行を維持したまま不一致のデータ行を折りたたみます。
  */
 fun MasuSheetViewModel.onApplyColumnFilter(
     col: Int,
@@ -1797,8 +1790,8 @@ fun MasuSheetViewModel.onApplyColumnFilter(
 }
 
 /**
- * [EN] ViewModel action/helper `onClearColumnFilter` handling clear column filter while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onClearColumnFilter` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Removes the active filter criteria on column `col` and recomputes visible rows across any remaining filtered columns.
+ * [JA] 指定列 `col` のフィルター条件を解除し、他列のフィルター条件を維持したまま表示行を再計算します。
  */
 fun MasuSheetViewModel.onClearColumnFilter(col: Int) {
     val cur = _uiState.value
@@ -1820,8 +1813,8 @@ fun MasuSheetViewModel.onClearColumnFilter(col: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onClearAllFiltersOnCurrentSheet` handling clear all filters on current sheet while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onClearAllFiltersOnCurrentSheet` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Clears all column filters on the active worksheet and restores every filtered-hidden row to visible height.
+ * [JA] 現在のシート上の全列フィルター条件を一括解除し、絞り込みで非表示になっていた全行を再表示します。
  */
 fun MasuSheetViewModel.onClearAllFiltersOnCurrentSheet() {
     val cur = _uiState.value
@@ -1843,8 +1836,8 @@ fun MasuSheetViewModel.onClearAllFiltersOnCurrentSheet() {
 }
 
 /**
- * [EN] ViewModel action/helper `recomputeFilteredRowsForTable` handling recompute filtered rows for table while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `recomputeFilteredRowsForTable` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Evaluates all active column filters on `sheetIndex` across `rStart..rEnd` and collapses non-matching rows to `0pt` height.
+ * [JA] `sheetIndex` 上の有効な全列フィルター条件を評価し、条件を満たさないデータ行の高さを `0pt`（非表示）に更新します。
  */
 internal fun MasuSheetViewModel.recomputeFilteredRowsForTable(
     sheetIndex: Int,
@@ -1891,8 +1884,8 @@ internal fun MasuSheetViewModel.recomputeFilteredRowsForTable(
 }
 
 /**
- * [EN] ViewModel action/helper `onSwitchSelectedChartRowColumn` handling switch selected chart row column while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSwitchSelectedChartRowColumn` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Transposes categories and series on the currently selected chart object with Undo support.
+ * [JA] 現在選択中のグラフオブジェクトのカテゴリ軸とデータ系列（行／列）を入れ替えます。
  */
 fun MasuSheetViewModel.onSwitchSelectedChartRowColumn() {
     val cur = _uiState.value

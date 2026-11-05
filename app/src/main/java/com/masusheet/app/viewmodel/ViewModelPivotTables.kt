@@ -1,30 +1,16 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.Base64
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.CustomCellStyleOverride
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.model.PivotAggFunction
+import com.masusheet.app.model.PivotTableDefinition
+import com.masusheet.app.model.PivotValueFieldSpec
 import kotlin.math.abs
-import kotlin.math.roundToInt
-import com.masusheet.app.MasuSheetViewModel.*
+import org.json.JSONObject
 
 /**
  * ============================================================================
@@ -42,8 +28,8 @@ import com.masusheet.app.MasuSheetViewModel.*
 // =========================================================================
 
 /**
- * [EN] ViewModel action/helper `getMaterializedSheetObjectsForCurrentSheet` handling get materialized sheet objects for current sheet while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `getMaterializedSheetObjectsForCurrentSheet` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Returns floating objects belonging to the active sheet, including virtual preview charts on untouched sample dashboard sheets.
+ * [JA] 現在のシートに属するオブジェクト一覧を返します（未編集サンプルダッシュボードの初期グラフも含みます）。
  */
 fun MasuSheetViewModel.getMaterializedSheetObjectsForCurrentSheet(): List<NativeSheetObject> {
     val cur = _uiState.value
@@ -64,8 +50,8 @@ fun MasuSheetViewModel.getMaterializedSheetObjectsForCurrentSheet(): List<Native
 }
 
 /**
- * [EN] ViewModel action/helper `getActivePivotTable` handling get active pivot table while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `getActivePivotTable` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Resolves the PivotTable containing the active cell, matching `activePivotTableId`, or residing on the current worksheet.
+ * [JA] アクティブセル位置、`activePivotTableId`、または現在のシート上に存在するピボットテーブル定義を解決して返します。
  */
 fun MasuSheetViewModel.getActivePivotTable(): PivotTableDefinition? {
     val cur = _uiState.value
@@ -82,8 +68,8 @@ fun MasuSheetViewModel.getActivePivotTable(): PivotTableDefinition? {
 }
 
 /**
- * [EN] ViewModel action/helper `onDismissPivotLauncher` handling dismiss pivot launcher while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDismissPivotLauncher` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Hides the empty PivotTable placeholder launcher card and closes the PivotTable Fields pane.
+ * [JA] ピボットテーブルのプレースホルダー案内カードを閉じ、フィールド設定ペインを非表示にします。
  */
 fun MasuSheetViewModel.onDismissPivotLauncher(pivotId: String? = null) {
     val cur = _uiState.value
@@ -102,8 +88,8 @@ fun MasuSheetViewModel.onDismissPivotLauncher(pivotId: String? = null) {
 }
 
 /**
- * [EN] ViewModel action/helper `onTogglePivotFieldsPane` handling toggle pivot fields pane while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTogglePivotFieldsPane` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Opens or closes the right-side PivotTable Fields configuration pane for the active PivotTable.
+ * [JA] アクティブなピボットテーブルの右側「フィールドリスト」設定ペインを開閉します。
  */
 fun MasuSheetViewModel.onTogglePivotFieldsPane(open: Boolean? = null) {
     val cur = _uiState.value
@@ -138,16 +124,16 @@ fun MasuSheetViewModel.onTogglePivotFieldsPane(open: Boolean? = null) {
 }
 
 /**
- * [EN] ViewModel action/helper `onOpenCreatePivotTableDialog` handling open create pivot table dialog while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onOpenCreatePivotTableDialog` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Shows or dismisses the Create PivotTable source-range and destination dialog.
+ * [JA] 「ピボットテーブルの作成」（元データ範囲・出力先シート指定）ダイアログを開閉します。
  */
 fun MasuSheetViewModel.onOpenCreatePivotTableDialog(open: Boolean = true) {
     _uiState.value = _uiState.value.copy(isCreatePivotDialogOpen = open)
 }
 
 /**
- * [EN] ViewModel action/helper `onInsertOrOpenPivotTable` handling insert or open pivot table while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onInsertOrOpenPivotTable` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Opens the Fields pane if the cursor is already inside a PivotTable, opens the creation dialog when requested, or creates a PivotTable immediately.
+ * [JA] カーソル位置に既存ピボットがあればフィールドペインを開き、新規時は作成ダイアログ表示または即時ピボット集計を実行します。
  */
 fun MasuSheetViewModel.onInsertOrOpenPivotTable(
     openCreateDialog: Boolean = false,
@@ -193,8 +179,8 @@ fun MasuSheetViewModel.onInsertOrOpenPivotTable(
 }
 
 /**
- * [EN] ViewModel action/helper `extractSourceTableRecords` handling extract source table records while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `extractSourceTableRecords` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Extracts `(uniqueHeaders, numericFieldSet, rowRecordMaps)` from `(startRow..endRow, startCol..endCol)` on `snap` (skipping `合計`/`Total` footer rows).
+ * [JA] 指定セル範囲から重複解消済み見出しリスト・数値列セット・行レコード辞書リスト（末尾の合計行を除外）を抽出します。
  */
 internal fun MasuSheetViewModel.extractSourceTableRecords(
     snap: NativeViewportSnapshot,
@@ -268,8 +254,8 @@ internal fun MasuSheetViewModel.extractSourceTableRecords(
 }
 
 /**
- * [EN] ViewModel action/helper `onCreatePivotTable` handling create pivot table while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onCreatePivotTable` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Creates (or updates) a `PivotTableDefinition` from `sourceRangeText` on either a new worksheet or `targetAddress`, then materializes its cells.
+ * [JA] 指定された元データ範囲から新規シートまたは指定セル位置にピボットテーブル定義を作成し、集計結果をセルへ展開します。
  */
 fun MasuSheetViewModel.onCreatePivotTable(
     sourceRangeText: String = "",
@@ -521,8 +507,8 @@ fun MasuSheetViewModel.onCreatePivotTable(
 }
 
 /**
- * [EN] ViewModel action/helper `onSelectActivePivotTable` handling select active pivot table while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSelectActivePivotTable` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Switches to `pivotId`'s target worksheet, selects its top-left cell, and opens the PivotTable Fields pane.
+ * [JA] 指定された `pivotId` の配置シートへ移動して先頭セルを選択し、ピボットフィールド設定ペインを表示します。
  */
 fun MasuSheetViewModel.onSelectActivePivotTable(pivotId: String) {
     val pivot = _uiState.value.pivotTables.firstOrNull { it.id == pivotId } ?: return
@@ -538,8 +524,8 @@ fun MasuSheetViewModel.onSelectActivePivotTable(pivotId: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `updateActivePivotAndMaterialize` handling update active pivot and materialize while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `updateActivePivotAndMaterialize` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Applies `transform` to the active `PivotTableDefinition`, syncs ribbon layout flags, re-renders the PivotTable cells, and posts a localized notice.
+ * [JA] アクティブなピボット定義に `transform` を適用し、リボン表示状態を同期した上でシート上の集計表を再展開します。
  */
 internal fun MasuSheetViewModel.updateActivePivotAndMaterialize(
     noticeJa: String,
@@ -617,8 +603,8 @@ internal fun MasuSheetViewModel.updateActivePivotAndMaterialize(
 }
 
 /**
- * [EN] ViewModel action/helper `onTogglePivotFieldChecked` handling toggle pivot field checked while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTogglePivotFieldChecked` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Checks or unchecks `fieldName` in the PivotTable Fields list (auto-placing numeric fields into Values and text fields into Rows).
+ * [JA] ピボットフィールドのチェック状態を切り替え、ON時は数値列を「値」エリア、文字列列を「行」エリアへ自動配置します。
  */
 fun MasuSheetViewModel.onTogglePivotFieldChecked(fieldName: String) {
     val active = getActivePivotTable() ?: return
@@ -632,8 +618,8 @@ fun MasuSheetViewModel.onTogglePivotFieldChecked(fieldName: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onAssignPivotFieldToArea` handling assign pivot field to area while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onAssignPivotFieldToArea` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Assigns `fieldName` to `row`, `column`, `filter`, `value`, or `none` (removing it from previous areas) and re-materializes the PivotTable.
+ * [JA] 指定フィールドを「行」「列」「フィルター」「値」のいずれかのエリアへ移動（または解除）し、ピボット集計を更新します。
  */
 fun MasuSheetViewModel.onAssignPivotFieldToArea(fieldName: String, area: String) {
     val cleanArea = area.lowercase().trim()
@@ -680,8 +666,8 @@ fun MasuSheetViewModel.onAssignPivotFieldToArea(fieldName: String, area: String)
 }
 
 /**
- * [EN] ViewModel action/helper `onMovePivotFieldInArea` handling move pivot field in area while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onMovePivotFieldInArea` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Moves `fieldName` up or down (`delta`) within its assigned PivotTable area (`row`, `column`, `filter`, or `value`).
+ * [JA] ピボットの各エリア（行・列・フィルター・値）内における `fieldName` の並び順を上下（`delta`）に入れ替えます。
  */
 fun MasuSheetViewModel.onMovePivotFieldInArea(area: String, fieldName: String, delta: Int) {
     updateActivePivotAndMaterialize(
@@ -709,8 +695,8 @@ fun MasuSheetViewModel.onMovePivotFieldInArea(area: String, fieldName: String, d
 }
 
 /**
- * [EN] ViewModel action/helper `onRemovePivotValueFieldAt` handling remove pivot value field at while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onRemovePivotValueFieldAt` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Removes the value aggregation field at `index` from the active PivotTable and re-renders its grid output.
+ * [JA] アクティブなピボットテーブルの「値」エリアから `index` 番目の集計フィールドを削除して再集計します。
  */
 fun MasuSheetViewModel.onRemovePivotValueFieldAt(index: Int) {
     updateActivePivotAndMaterialize(
@@ -723,8 +709,8 @@ fun MasuSheetViewModel.onRemovePivotValueFieldAt(index: Int) {
 }
 
 /**
- * [EN] ViewModel action/helper `onCyclePivotValueFieldAgg` handling cycle pivot value field agg while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onCyclePivotValueFieldAgg` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Sets `explicitAgg` or cycles the summary function (`SUM` -> `AVERAGE` -> `COUNT` -> `MAX` -> `MIN` -> `PRODUCT`) on a PivotTable value field.
+ * [JA] ピボット値フィールドの集計方法（合計・平均・個数・最大・最小・積）を指定または順送り変更して再集計します。
  */
 fun MasuSheetViewModel.onCyclePivotValueFieldAgg(fieldName: String, explicitAgg: PivotAggFunction? = null, valueIndex: Int = -1) {
     val order = listOf(
@@ -768,8 +754,8 @@ fun MasuSheetViewModel.onCyclePivotValueFieldAgg(fieldName: String, explicitAgg:
 }
 
 /**
- * [EN] ViewModel action/helper `onSetPivotFilterValue` handling set pivot filter value while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSetPivotFilterValue` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Applies a report filter value (`"ALL"` or specific item string) on `fieldName` and re-materializes the active PivotTable.
+ * [JA] ピボットのフィルターフィールド `fieldName` に絞り込み値（または `"ALL"` 全解除）を設定して再集計します。
  */
 fun MasuSheetViewModel.onSetPivotFilterValue(fieldName: String, filterValue: String) {
     val cleanVal = filterValue.trim().ifEmpty { "ALL" }
@@ -792,8 +778,8 @@ fun MasuSheetViewModel.onSetPivotFilterValue(fieldName: String, filterValue: Str
 }
 
 /**
- * [EN] ViewModel action/helper `onTogglePivotRowGroupCollapse` handling toggle pivot row group collapse while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTogglePivotRowGroupCollapse` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Expands or collapses nested outer row group `groupKey` (`[−]` / `[+]`) in multi-level row PivotTables.
+ * [JA] 複数行フィールドを持つピボットテーブルにおいて、親グループ `groupKey` の展開（`[−]`）と折りたたみ（`[+]`）を切り替えます。
  */
 fun MasuSheetViewModel.onTogglePivotRowGroupCollapse(groupKey: String) {
     updateActivePivotAndMaterialize(
@@ -809,8 +795,8 @@ fun MasuSheetViewModel.onTogglePivotRowGroupCollapse(groupKey: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSetPivotStylePreset` handling set pivot style preset while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSetPivotStylePreset` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Applies a named PivotTable color style preset (such as `PivotStyleMedium2`, `PivotStyleMedium7`, `PivotStyleDark2`) and re-renders cells.
+ * [JA] ピボットテーブルのデザインスタイルプリセット（青・緑・ダーク等）を変更し、セル配色を再描画します。
  */
 fun MasuSheetViewModel.onSetPivotStylePreset(stylePreset: String) {
     val clean = stylePreset.ifBlank { "PivotStyleMedium2" }
@@ -823,8 +809,8 @@ fun MasuSheetViewModel.onSetPivotStylePreset(stylePreset: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSetPivotReportLayout` handling set pivot report layout while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSetPivotReportLayout` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Switches PivotTable report layout between `compact`, `outline`, and `tabular` forms.
+ * [JA] ピボットテーブルのレポートレイアウト（コンパクト形式・アウトライン形式・表形式）を切り替えます。
  */
 fun MasuSheetViewModel.onSetPivotReportLayout(layout: String) {
     val clean = layout.lowercase().ifBlank { "compact" }
@@ -842,8 +828,8 @@ fun MasuSheetViewModel.onSetPivotReportLayout(layout: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSetPivotSubtotalsMode` handling set pivot subtotals mode while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSetPivotSubtotalsMode` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Configures group subtotals display (`none`, `top`, or `bottom`) on the active PivotTable.
+ * [JA] ピボットテーブルのグループ小計表示モード（表示しない・グループの先頭・グループの末尾）を設定します。
  */
 fun MasuSheetViewModel.onSetPivotSubtotalsMode(mode: String) {
     val clean = mode.lowercase().ifBlank { "bottom" }
@@ -861,8 +847,8 @@ fun MasuSheetViewModel.onSetPivotSubtotalsMode(mode: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onSetPivotGrandTotalsMode` handling set pivot grand totals mode while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSetPivotGrandTotalsMode` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Enables or disables row and column Grand Totals (`both`, `rows`, `cols`, or `none`) on the active PivotTable.
+ * [JA] ピボットテーブルの行・列の総計（Grand Totals）の表示モードを切り替えます。
  */
 fun MasuSheetViewModel.onSetPivotGrandTotalsMode(mode: String) {
     val clean = mode.lowercase().ifBlank { "both" }
@@ -876,8 +862,8 @@ fun MasuSheetViewModel.onSetPivotGrandTotalsMode(mode: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onTogglePivotRepeatLabels` handling toggle pivot repeat labels while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTogglePivotRepeatLabels` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Toggles repeating outer row item labels on every detail row in Outline/Tabular PivotTable layouts.
+ * [JA] アウトライン／表形式レイアウトにおける「すべてのアイテムのラベルを繰り返し表示」のON/OFFを切り替えます。
  */
 fun MasuSheetViewModel.onTogglePivotRepeatLabels() {
     updateActivePivotAndMaterialize(
@@ -889,8 +875,8 @@ fun MasuSheetViewModel.onTogglePivotRepeatLabels() {
 }
 
 /**
- * [EN] ViewModel action/helper `onTogglePivotBlankRows` handling toggle pivot blank rows while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTogglePivotBlankRows` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Toggles inserting a blank separator row after each outer row group in the active PivotTable.
+ * [JA] ピボットテーブルの各行グループ末尾への空白行挿入のON/OFFを切り替えます。
  */
 fun MasuSheetViewModel.onTogglePivotBlankRows() {
     updateActivePivotAndMaterialize(
@@ -902,8 +888,8 @@ fun MasuSheetViewModel.onTogglePivotBlankRows() {
 }
 
 /**
- * [EN] ViewModel action/helper `onTogglePivotBandedRows` handling toggle pivot banded rows while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTogglePivotBandedRows` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Toggles alternating row shading (banded rows) on the active PivotTable.
+ * [JA] ピボットテーブルの「縞模様（行）」スタイルのON/OFFを切り替えます。
  */
 fun MasuSheetViewModel.onTogglePivotBandedRows() {
     updateActivePivotAndMaterialize(
@@ -915,8 +901,8 @@ fun MasuSheetViewModel.onTogglePivotBandedRows() {
 }
 
 /**
- * [EN] ViewModel action/helper `onTogglePivotBandedCols` handling toggle pivot banded cols while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onTogglePivotBandedCols` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Toggles alternating column shading (banded columns) on the active PivotTable.
+ * [JA] ピボットテーブルの「縞模様（列）」スタイルのON/OFFを切り替えます。
  */
 fun MasuSheetViewModel.onTogglePivotBandedCols() {
     updateActivePivotAndMaterialize(
@@ -928,8 +914,8 @@ fun MasuSheetViewModel.onTogglePivotBandedCols() {
 }
 
 /**
- * [EN] ViewModel action/helper `onRefreshPivotTable` handling refresh pivot table while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onRefreshPivotTable` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Recalculates workbook formulas, re-reads source table records (including cross-sheet sources via `readSheetCells`), and re-materializes target PivotTables.
+ * [JA] ブック全体の数式を再計算し、元データ範囲（別シートのセルも含む）から最新レコードを再取得してピボットテーブルを更新します。
  */
 fun MasuSheetViewModel.onRefreshPivotTable(pivotId: String? = null, refreshAll: Boolean = false) {
     val calcSnap = engineGateway.executeCommand("formulas.calculateNow", "{}")
@@ -990,8 +976,8 @@ fun MasuSheetViewModel.onRefreshPivotTable(pivotId: String? = null, refreshAll: 
 }
 
 /**
- * [EN] ViewModel action/helper `onClearPivotTable` handling clear pivot table while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onClearPivotTable` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Clears all assigned row, column, filter, and value fields from the active PivotTable (or clears sheet AutoFilters if none is active).
+ * [JA] ピボットテーブルの全エリア配置とフィルター選択を初期状態にクリアします（ピボット未選択時はシートフィルターを解除）。
  */
 fun MasuSheetViewModel.onClearPivotTable(pivotId: String? = null) {
     val active = (if (pivotId != null) _uiState.value.pivotTables.firstOrNull { it.id == pivotId } else getActivePivotTable())
@@ -1015,8 +1001,8 @@ fun MasuSheetViewModel.onClearPivotTable(pivotId: String? = null) {
 }
 
 /**
- * [EN] ViewModel action/helper `onDeletePivotTable` handling delete pivot table while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDeletePivotTable` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Deletes `pivotId` (or the active PivotTable), wiping its rendered cells and formatting from the target worksheet with Undo support.
+ * [JA] 対象ピボットテーブルを削除し、シート上に展開されていた集計セルと書式をクリアします（Undo対応）。
  */
 fun MasuSheetViewModel.onDeletePivotTable(pivotId: String? = null) {
     val cur = _uiState.value
@@ -1075,8 +1061,8 @@ fun MasuSheetViewModel.onDeletePivotTable(pivotId: String? = null) {
 }
 
 /**
- * [EN] UI/application helper `PivotStylePalette` (pivot style palette).
- * [JA] `PivotStylePalette` に対応するUI／アプリケーション補助処理を実行します。
+ * [EN] Resolved ARGB color palette (header, filter bar, banded rows, subtotal, grand total, and grid border) for a PivotTable style preset.
+ * [JA] ピボットスタイルプリセットから解決された各部配色（見出し・フィルター・縞模様・小計・総計・罫線色）を保持します。
  */
 internal data class PivotStylePalette(
     val headerBg: Int,
@@ -1093,8 +1079,8 @@ internal data class PivotStylePalette(
 )
 
 /**
- * [EN] ViewModel action/helper `resolvePivotStylePalette` handling resolve pivot style palette while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `resolvePivotStylePalette` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Maps a PivotTable style preset identifier (`PivotStyleLight*`, `PivotStyleMedium*`, `PivotStyleDark*`) to its `PivotStylePalette`.
+ * [JA] スタイルプリセット名に対応する `PivotStylePalette`（ヘッダ・縞模様・総計行などのARGB配色）を返します。
  */
 internal fun MasuSheetViewModel.resolvePivotStylePalette(stylePreset: String): PivotStylePalette = when (stylePreset) {
     "PivotStyleMedium7" -> PivotStylePalette(
@@ -1165,8 +1151,8 @@ internal fun MasuSheetViewModel.resolvePivotStylePalette(stylePreset: String): P
 }
 
 /**
- * [EN] ViewModel action/helper `computePivotAggregation` handling compute pivot aggregation while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `computePivotAggregation` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Computes `(rawNumericString, formattedDisplayString)` for `records` under `spec.agg` (`SUM`, `AVERAGE`, `COUNT`, `MAX`, `MIN`, `PRODUCT`, `PERCENT_OF_TOTAL`).
+ * [JA] 対象レコード群に対して指定集計関数（合計・平均・個数・最大・最小・積・総計比）を計算し、生数値と表示文字列のペアを返します。
  */
 internal fun MasuSheetViewModel.computePivotAggregation(
     records: List<Map<String, String>>,
@@ -1236,8 +1222,8 @@ internal fun MasuSheetViewModel.computePivotAggregation(
 }
 
 /**
- * [EN] ViewModel action/helper `materializePivotTable` handling materialize pivot table while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `materializePivotTable` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Clears the previous footprint of `pivotId` and writes its freshly aggregated headers, grouped rows, subtotals, grand totals, and theme colors onto the target sheet.
+ * [JA] 前回の出力領域をクリアした上で、最新のピボット集計結果（フィルター行・列見出し・階層行・小計・総計・配色）をシートセルへ書き出します。
  */
 fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
     val cur = _uiState.value

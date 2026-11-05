@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- [EN] Exclude encrypted API key storage from Android 12+ cloud backup and device transfer. -->
-<!-- [JA] Android 12 以降のクラウドバックアップおよび端末移行から暗号化 API キー保管領域を除外します。 -->
+<!-- [EN] Exclude encrypted API key storage, local file history, and temporary handoff/clipboard files from Android 12+ cloud backup and device transfer. -->
+<!-- [JA] Android 12 以降のクラウドバックアップおよび端末移行から、暗号化 API キー保管領域・ローカル履歴・一時ハンドオフ／クリップボード画像を除外します。 -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="masusheet_secure_secrets.xml" />
+        <exclude domain="sharedpref" path="masusheet_prefs.xml" />
         <exclude domain="file" path="handoff" />
+        <exclude domain="file" path="clipboard_images" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="masusheet_secure_secrets.xml" />
+        <exclude domain="sharedpref" path="masusheet_prefs.xml" />
         <exclude domain="file" path="handoff" />
+        <exclude domain="file" path="clipboard_images" />
     </device-transfer>
 </data-extraction-rules>

@@ -1,30 +1,22 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.core.SpreadsheetColorPalette
+import com.masusheet.app.model.ChartSeries
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeCellModel
+import com.masusheet.app.model.NativeSheetObject
+import com.masusheet.app.model.SheetObjectKind
 import java.io.ByteArrayOutputStream
-import java.io.File
 import java.util.Base64
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import com.masusheet.app.MasuSheetViewModel.*
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 /**
  * ============================================================================
@@ -38,8 +30,8 @@ import com.masusheet.app.MasuSheetViewModel.*
  */
 
 /**
- * [EN] ViewModel action/helper `onSelectSheetObject` handling select sheet object while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSelectSheetObject` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Selects (or multi-select toggles when `appendToggle = true`) a floating chart, shape, text box, or image on the active sheet.
+ * [JA] アクティブシート上のグラフ・図形・テキストボックス・画像を選択（`appendToggle = true` 時は複数選択トグル）します。
  */
 fun MasuSheetViewModel.onSelectSheetObject(objectId: String?, appendToggle: Boolean = false) {
     if (objectId != null && objectId.startsWith("dashboard_chart_")) {
@@ -105,8 +97,8 @@ fun MasuSheetViewModel.onSelectAllSheetObjectsOnCurrentSheet(imagesOnly: Boolean
 }
 
 /**
- * Ensures the built-in Sales Dashboard charts (`dashboard_chart_revenue_by_region` and `dashboard_chart_share_of_total`)
- * are materialized in `_uiState.value.sheetObjects` when the user selects or recolors them.
+ * [EN] Lazily materializes the sample Sales Dashboard charts into `sheetObjects` the first time they are selected, edited, or exported.
+ * [JA] 売上ダッシュボードのサンプルグラフが初回選択・編集・保存される際に、実体オブジェクトとして `sheetObjects` に生成します。
  */
 internal fun MasuSheetViewModel.ensureDefaultSalesDashboardChartsMaterialized() {
     val vp = _uiState.value.viewport
@@ -168,8 +160,8 @@ internal fun MasuSheetViewModel.ensureDefaultSalesDashboardChartsMaterialized() 
 }
 
 /**
- * [EN] ViewModel action/helper `onInsertShape` handling insert shape while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onInsertShape` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Inserts a vector shape (`rectangle`, `roundRect`, `oval`, `diamond`, `arrow`, `callout`, etc.) near the active cell with Undo support.
+ * [JA] アクティブセル近傍に指定種別のベクター図形を挿入して選択状態にし、Undo履歴へ記録します。
  */
 fun MasuSheetViewModel.onInsertShape(
     shapeKind: String,
@@ -245,8 +237,8 @@ fun MasuSheetViewModel.onInsertShape(
 }
 
 /**
- * [EN] ViewModel action/helper `onInsertTextBox` handling insert text box while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onInsertTextBox` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Inserts an editable floating text box near the active cell initialized with `initialText`.
+ * [JA] アクティブセル近傍に `initialText` を持つフローティングテキストボックスを挿入します。
  */
 fun MasuSheetViewModel.onInsertTextBox(initialText: String = "") {
     val vp = _uiState.value.viewport
@@ -304,8 +296,8 @@ fun MasuSheetViewModel.onUpdateSelectedObjectFillColor(newFillColor: Int) {
 }
 
 /**
- * Updates the border/outline color (`strokeColor`) of the currently selected object.
- * Pass `0` for no border.
+ * [EN] Updates the outline/border color (`strokeColor`, or `0` for no outline) of the selected floating object.
+ * [JA] 選択中の図形・テキストボックス・グラフ枠の枠線色（`0` 指定時は枠線なし）を変更します。
  */
 fun MasuSheetViewModel.onUpdateSelectedObjectStrokeColor(newStrokeColor: Int) {
     ensureDefaultSalesDashboardChartsMaterialized()
@@ -406,7 +398,8 @@ fun MasuSheetViewModel.onUpdateSelectedObjectTextColor(newTextColor: Int, subEle
 }
 
 /**
- * Updates the series colors (`chartSeries`) of the currently selected chart (or all charts on the active sheet).
+ * [EN] Applies `primaryArgb` (and harmonious companion palette colors for multi-series charts) to the selected chart's data series.
+ * [JA] 選択中のグラフのデータ系列色（複数系列時は調和パレットを自動展開）を更新します。
  */
 fun MasuSheetViewModel.onUpdateSelectedChartSeriesColor(primaryArgb: Int) {
     ensureDefaultSalesDashboardChartsMaterialized()
@@ -447,7 +440,8 @@ fun MasuSheetViewModel.onUpdateSelectedChartSeriesColor(primaryArgb: Int) {
 }
 
 /**
- * Rotates a specific sheet object (`objectId`) to `rotationDeg` (normalized into `[0f, 360f)`).
+ * [EN] Sets `objectId`'s rotation angle normalized into `[0f, 360f)` degrees and records an overlay Undo snapshot.
+ * [JA] 指定オブジェクト `objectId` の回転角を `[0°, 360°)` に正規化して設定し、Undo履歴へ記録します。
  */
 fun MasuSheetViewModel.onRotateSheetObject(objectId: String, rotationDeg: Float) {
     pushCustomOverlayUndoSnapshot(captureCustomOverlaySnapshot(engineStepsCount = 0))
@@ -470,8 +464,8 @@ fun MasuSheetViewModel.onRotateSheetObject(objectId: String, rotationDeg: Float)
 }
 
 /**
- * Rotates the currently selected object (or latest object on the active sheet) by `deltaDeg` degrees
- * (e.g. `+90f` for Rotate Right 90°, `-90f` for Rotate Left 90°, `180f` for Flip Vertical).
+ * [EN] Rotates the currently selected object (or latest object on the sheet) by `deltaDeg` degrees (`+90°`, `-90°`, `180°`).
+ * [JA] 選択中のオブジェクトの回転角を現在値から `deltaDeg` 度（右90°・左90°・上下反転など）加算回転させます。
  */
 fun MasuSheetViewModel.onRotateSelectedObjectBy(deltaDeg: Float) {
     val target = _uiState.value.sheetObjects.firstOrNull { it.id == _uiState.value.selectedObjectId }
@@ -481,7 +475,8 @@ fun MasuSheetViewModel.onRotateSelectedObjectBy(deltaDeg: Float) {
 }
 
 /**
- * Resets the rotation of the currently selected object back to `0°`.
+ * [EN] Resets the rotation angle of the currently selected object back to `0°`.
+ * [JA] 選択中のオブジェクトの回転角を水平（`0°`）にリセットします。
  */
 fun MasuSheetViewModel.onResetSelectedObjectRotation() {
     val target = _uiState.value.sheetObjects.firstOrNull { it.id == _uiState.value.selectedObjectId }
@@ -491,8 +486,8 @@ fun MasuSheetViewModel.onResetSelectedObjectRotation() {
 }
 
 /**
- * [EN] ViewModel action/helper `parseNumericCell` handling parse numeric cell while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `parseNumericCell` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Parses a cell's raw edit value or formatted currency/percent/accounting display string (including `(123)` negatives) into a finite `Float`.
+ * [JA] セルの入力値または通貨・パーセント・会計括弧表記（`(123)` 負数等）を含む表示文字列を有限の `Float` 数値へ変換します。
  */
 fun MasuSheetViewModel.parseNumericCell(cell: NativeCellModel?): Float? {
     if (cell == null) return null
@@ -540,8 +535,8 @@ fun MasuSheetViewModel.onPasteScreenshotOrLatestImage(
 }
 
 /**
- * [EN] ViewModel action/helper `onPasteScreenshotOrLatestImage` handling paste screenshot or latest image while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onPasteScreenshotOrLatestImage` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Inserts clipboard image bytes `(displayName, pngOrJpegBytes)` onto the active worksheet as a resizable `IMAGE` object.
+ * [JA] クリップボードから取得した画像データ `(表示名, バイト列)` をアクティブシート上に画像オブジェクトとして貼り付けます。
  */
 fun MasuSheetViewModel.onPasteScreenshotOrLatestImage(clipboardImage: Pair<String, ByteArray>?): Boolean {
     if (clipboardImage != null && clipboardImage.second.isNotEmpty()) {
@@ -570,8 +565,8 @@ fun MasuSheetViewModel.onPasteScreenshotOrLatestImage(clipboardImage: Pair<Strin
 }
 
 /**
- * [EN] ViewModel action/helper `onInsertImageUri` handling insert image uri while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onInsertImageUri` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Synchronously reads image bytes from `uriString` via `documentGateway` and inserts the image onto the active sheet.
+ * [JA] `documentGateway` 経由で `uriString` から画像バイト列を同期読み込みし、シート上に画像オブジェクトを挿入します。
  */
 fun MasuSheetViewModel.onInsertImageUri(uriString: String): Boolean {
     val bytes = documentGateway.readBytes(uriString)
@@ -584,8 +579,35 @@ fun MasuSheetViewModel.onInsertImageUri(uriString: String): Boolean {
 }
 
 /**
- * [EN] ViewModel action/helper `downsampleLargeImageBytesIfNeeded` handling downsample large image bytes if needed while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `downsampleLargeImageBytesIfNeeded` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Reads and downsamples a picked image URI on `Dispatchers.IO` before attaching it to the worksheet on the main thread.
+ * [JA] 画像URIの読込および高解像度画像の縮小処理を `Dispatchers.IO` で非同期実行し、UIスレッドのブロックを防ぎます。
+ */
+fun MasuSheetViewModel.onInsertImageUriAsync(uriString: String) {
+    viewModelScope.launch {
+        val loaded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val raw = documentGateway.readBytes(uriString)
+            if (raw == null || raw.isEmpty()) {
+                null
+            } else {
+                val dispName = documentGateway.resolveDisplayName(uriString)
+                val downsampled = downsampleLargeImageBytesIfNeeded(raw)
+                dispName to downsampled
+            }
+        }
+        if (loaded == null) {
+            val isEn = _uiState.value.language == "en"
+            _uiState.value = _uiState.value.copy(
+                errorMessage = if (isEn) "Could not read image file" else "画像ファイルを読み込めませんでした"
+            )
+        } else {
+            onInsertImageBytes(loaded.first, loaded.second)
+        }
+    }
+}
+
+/**
+ * [EN] Downsamples oversized images so neither pixel dimension exceeds `maxEdgePx` (default `2048px`), preventing canvas and `.xlsx` memory bloat.
+ * [JA] 長辺が `maxEdgePx`（既定 `2048px`）を超える高解像度画像を縮小再エンコードし、描画メモリ圧迫や保存ファイル肥大化を防ぎます。
  */
 internal fun MasuSheetViewModel.downsampleLargeImageBytesIfNeeded(rawBytes: ByteArray, maxEdgePx: Int = 2048): ByteArray {
     val dims = MasuSheetConfig.decodeImageDimensions(rawBytes) ?: return rawBytes
@@ -616,8 +638,8 @@ internal fun MasuSheetViewModel.downsampleLargeImageBytesIfNeeded(rawBytes: Byte
 }
 
 /**
- * [EN] ViewModel action/helper `onInsertImageBytes` handling insert image bytes while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onInsertImageBytes` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Downsamples `bytes` if needed, computes natural aspect-ratio sheet bounds, and inserts a new `SheetObjectKind.IMAGE` object with Undo support.
+ * [JA] 画像バイト列を必要に応じて縮小し、元アスペクト比を保ったサイズでシート上に画像オブジェクトを挿入・Undo記録します。
  */
 fun MasuSheetViewModel.onInsertImageBytes(fileName: String, bytes: ByteArray): Boolean {
     if (bytes.isEmpty()) return false
@@ -666,7 +688,8 @@ fun MasuSheetViewModel.onInsertImageBytes(fileName: String, bytes: ByteArray): B
 }
 
 /**
- * Resets the selected (or latest) image object on the current sheet back to its original aspect ratio and natural size.
+ * [EN] Restores the selected image object's width and height to its original pixel aspect ratio and natural point size.
+ * [JA] 選択中の画像オブジェクトの幅・高さを、元画像のピクセル比率に基づく自然な初期サイズへ戻します。
  */
 fun MasuSheetViewModel.onResetSelectedImageAspectRatio(objectId: String? = null): Boolean {
     val cur = _uiState.value
@@ -701,8 +724,8 @@ fun MasuSheetViewModel.onResetSelectedImageAspectRatio(objectId: String? = null)
 }
 
 /**
- * [EN] ViewModel action/helper `onMoveOrResizeSheetObject` handling move or resize sheet object while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onMoveOrResizeSheetObject` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Updates `objectId`'s sheet position `(newXPt, newYPt)` and clamped size `(newWidthPt, newHeightPt)`, pushing an Undo snapshot when changed.
+ * [JA] オブジェクトの位置 `(newXPt, newYPt)` とサイズ `(newWidthPt, newHeightPt)` を更新し、変更時にUndo履歴へ記録します。
  */
 fun MasuSheetViewModel.onMoveOrResizeSheetObject(objectId: String, newXPt: Float, newYPt: Float, newWidthPt: Float, newHeightPt: Float) {
     val existing = _uiState.value.sheetObjects.firstOrNull { it.id == objectId } ?: return
@@ -945,8 +968,8 @@ fun MasuSheetViewModel.onCopySelectedSheetObjectsAsCombinedImage(targetObjectId:
 }
 
 /**
- * [EN] ViewModel action/helper `onUpdateSheetObjectText` handling update sheet object text while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onUpdateSheetObjectText` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Updates the title/body text of shape, text box, or chart `objectId` and records an overlay Undo snapshot.
+ * [JA] 図形・テキストボックス・グラフ `objectId` のテキスト／タイトルを更新し、Undo履歴へ記録します。
  */
 fun MasuSheetViewModel.onUpdateSheetObjectText(objectId: String, newText: String) {
     pushCustomOverlayUndoSnapshot(captureCustomOverlaySnapshot(engineStepsCount = 0))
@@ -995,8 +1018,8 @@ fun MasuSheetViewModel.onDeleteSheetObject(objectId: String) {
 }
 
 /**
- * [EN] ViewModel action/helper `onDeleteSelectedSheetObjects` handling delete selected sheet objects while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onDeleteSelectedSheetObjects` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Deletes all currently selected floating objects on the active sheet in a single Undoable operation.
+ * [JA] 現在選択されている1つまたは複数のシートオブジェクトを1回のUndo単位で一括削除します。
  */
 fun MasuSheetViewModel.onDeleteSelectedSheetObjects() {
     val cur = _uiState.value

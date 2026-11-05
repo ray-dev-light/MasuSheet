@@ -1,146 +1,30 @@
-package com.masusheet.app
+package com.masusheet.app.canvas
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
-import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.text.Editable
-import android.text.InputType
-import android.text.Spannable
-import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
-import android.util.TypedValue
-import android.view.GestureDetector
-import android.view.Gravity
-import android.view.KeyEvent
-import android.view.MotionEvent
-import android.view.PointerIcon
-import android.view.ScaleGestureDetector
-import android.view.VelocityTracker
-import android.view.View
-import android.view.ViewConfiguration
-import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputConnectionWrapper
-import android.view.inputmethod.InputContentInfo
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
-import android.widget.LinearLayout
-import android.widget.OverScroller
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContract
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerHoverIcon
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import kotlin.math.PI
+import com.masusheet.app.core.FormulaPointModeHelper
+import com.masusheet.app.core.InlineCheckboxHelper
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.NativeCellModel
+import com.masusheet.app.model.NativeSparklineModel
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.viewmodel.getActiveCellValidation
+import com.masusheet.app.viewmodel.isTableHeaderCell
+import com.masusheet.app.viewmodel.previewAutoFillCells
 import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sin
-import com.masusheet.app.MasuSheetNativeGridView.*
 
 /**
  * ============================================================================
@@ -154,8 +38,8 @@ import com.masusheet.app.MasuSheetNativeGridView.*
  */
 
 /**
- * [EN] Grid canvas helper that executes `renderStaticCellsLayer` (render static cells layer) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `renderStaticCellsLayer` 処理を実行します。
+ * [EN] Renders Layer 1 (sheet background, frozen-pane quadrants, gridlines, fills, borders, text, sparklines, and checkboxes) onto the given canvas.
+ * [JA] レイヤー1（シート背景、固定ペイン別の4象限セル、グリッド線、塗りつぶし、罫線、文字列、スパークライン、チェックボックス）を描画します。
  */
 internal fun MasuSheetNativeGridView.renderStaticCellsLayer(canvas: Canvas, w: Int, h: Int) {
     val sheetBg = if (isDarkTheme) 0xFF14181D.toInt() else 0xFFFFFFFF.toInt()
@@ -277,8 +161,8 @@ internal fun MasuSheetNativeGridView.renderStaticCellsLayer(canvas: Canvas, w: I
 }
 
 /**
- * [EN] Grid canvas helper that executes `computeQuadrantCellRect` (compute quadrant cell rect) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `computeQuadrantCellRect` 処理を実行します。
+ * [EN] Computes the zoomed screen-space `RectF` of `(row, col)` (spanning any merged range) within a scroll/freeze quadrant.
+ * [JA] 指定されたスクロール／固定ペイン象限内におけるセル `(row, col)`（結合セル範囲を含む）のズーム適用済み画面座標 `RectF` を算出します。
  */
 internal fun MasuSheetNativeGridView.computeQuadrantCellRect(
     snap: NativeViewportSnapshot,
@@ -296,8 +180,8 @@ internal fun MasuSheetNativeGridView.computeQuadrantCellRect(
 }
 
 /**
- * [EN] Grid canvas helper that executes `renderStaticQuadrant` (render static quadrant) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `renderStaticQuadrant` 処理を実行します。
+ * [EN] Clips to `[clipLeft, clipTop, clipRight, clipBottom]` and draws visible gridlines, conditional data bars, cell fills, merged cells, borders, and text for one freeze quadrant.
+ * [JA] 指定クリップ領域内の1象限について、可視セルの背景色・データバー・グリッド線・結合セル・罫線・テキストを一括描画します。
  */
 internal fun MasuSheetNativeGridView.renderStaticQuadrant(
     canvas: Canvas,
@@ -494,8 +378,8 @@ internal fun MasuSheetNativeGridView.renderStaticQuadrant(
 }
 
 /**
- * [EN] Grid canvas helper that executes `parseCellNumericValue` (parse cell numeric value) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `parseCellNumericValue` 処理を実行します。
+ * [EN] Parses a formatted cell string (stripping `$`, `,`, and `%`) into a `Float` for conditional-formatting data bar and sparkline scaling.
+ * [JA] 通貨記号・カンマ・パーセント記号を除いてセル表示文字列を `Float` に変換し、データバーやスパークラインの比率計算に使用します。
  */
 internal fun MasuSheetNativeGridView.parseCellNumericValue(raw: String?): Float {
     if (raw.isNullOrBlank()) return 0f
@@ -504,8 +388,8 @@ internal fun MasuSheetNativeGridView.parseCellNumericValue(raw: String?): Float 
 }
 
 /**
- * [EN] Grid canvas helper that executes `parseSingleA1Coord` (parse single a1 coord) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `parseSingleA1Coord` 処理を実行します。
+ * [EN] Parses an A1-style single cell token (such as `B4` or `$C$12`) into 0-based `(row, col)` coordinates, or `null` if invalid.
+ * [JA] `B4` や `$C$12` などの単一A1セル参照文字列を 0始まりの `(row, col)` 座標ペアに変換します（不正時は `null`）。
  */
 internal fun MasuSheetNativeGridView.parseSingleA1Coord(ref: String): Pair<Int, Int>? {
     val m = Regex("""^\$?([A-Za-z]+)\$?(\d+)$""").matchEntire(ref.trim()) ?: return null
@@ -519,8 +403,8 @@ internal fun MasuSheetNativeGridView.parseSingleA1Coord(ref: String): Pair<Int, 
 }
 
 /**
- * [EN] Grid canvas helper that executes `resolveSparklineValues` (resolve sparkline values) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `resolveSparklineValues` 処理を実行します。
+ * [EN] Reads finite numeric cell values across `sourceRange` on `snap` in row-major order to feed in-cell sparkline rendering.
+ * [JA] 指定された `sourceRange` 範囲内のセルから有限数値を走査・抽出し、セル内スパークライン描画用の配列を返します。
  */
 internal fun MasuSheetNativeGridView.resolveSparklineValues(snap: NativeViewportSnapshot, sourceRange: String): FloatArray {
     val clean = sourceRange.substringAfterLast('!').trim()
@@ -544,8 +428,8 @@ internal fun MasuSheetNativeGridView.resolveSparklineValues(snap: NativeViewport
 }
 
 /**
- * [EN] Grid canvas helper that executes `drawCustomSparkline` (draw custom sparkline) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `drawCustomSparkline` 処理を実行します。
+ * [EN] Draws a user-inserted sparkline (`line`, `column`, or `winloss`, with optional point markers) inside cell bounds `rect`.
+ * [JA] セル矩形 `rect` 内にユーザー設定のスパークライン（折れ線・縦棒・勝敗、および任意のマーカー点）を描画します。
  */
 internal fun MasuSheetNativeGridView.drawCustomSparkline(
     canvas: Canvas,
@@ -636,8 +520,8 @@ internal fun MasuSheetNativeGridView.drawCustomSparkline(
 }
 
 /**
- * [EN] Grid canvas helper that executes `drawInCellSparkline` (draw in cell sparkline) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `drawInCellSparkline` 処理を実行します。
+ * [EN] Draws an inline trend polyline with min/max endpoint markers inside `rect` when a cell carries a sparkline array.
+ * [JA] 数値配列から最小・最大スケーリングを行い、セル矩形 `rect` 内に折れ線トレンドと終端マーカーを描画します。
  */
 internal fun MasuSheetNativeGridView.drawInCellSparkline(canvas: Canvas, rect: RectF, values: FloatArray) {
     if (values.size < 2) return
@@ -670,8 +554,8 @@ internal fun MasuSheetNativeGridView.drawInCellSparkline(canvas: Canvas, rect: R
 }
 
 /**
- * [EN] Grid canvas helper that executes `adjustCellBgForTheme` (adjust cell bg for theme) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `adjustCellBgForTheme` 処理を実行します。
+ * [EN] Softens bright pastel cell fill colors in Dark Mode while preserving saturated accent fills and Light Mode colors verbatim.
+ * [JA] ダークモード表示時に淡いパステル背景色の輝度を抑えて白文字の視認性を確保し、ライトモード時は元の色をそのまま返します。
  */
 internal fun MasuSheetNativeGridView.adjustCellBgForTheme(argb: Int, darkTheme: Boolean): Int {
     if (!darkTheme) return argb
@@ -693,8 +577,8 @@ internal fun MasuSheetNativeGridView.adjustCellBgForTheme(argb: Int, darkTheme: 
 }
 
 /**
- * [EN] Grid canvas helper that executes `drawCellBorders` (draw cell borders) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `drawCellBorders` 処理を実行します。
+ * [EN] Draws the top, right, bottom, and left borders of `cell` around `rect` when encoded border metadata is non-zero.
+ * [JA] セルに上下左右の罫線情報が設定されている場合、`rect` の各辺に線幅と色を反映した罫線を描画します。
  */
 internal fun MasuSheetNativeGridView.drawCellBorders(canvas: Canvas, rect: RectF, cell: NativeCellModel) {
     if (cell.borderTop != 0) {
@@ -716,8 +600,8 @@ internal fun MasuSheetNativeGridView.drawCellBorders(canvas: Canvas, rect: RectF
 }
 
 /**
- * [EN] Grid canvas helper that executes `applyBorderPaint` (apply border paint) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `applyBorderPaint` 処理を実行します。
+ * [EN] Decodes MasuSheet's packed 32-bit border descriptor (`[halfWidthPt:8 | rgb:24]`) onto `borderPaint`.
+ * [JA] 上位8bitに線幅（0.5pt単位）、下位24bitにRGB色を格納した罫線エンコード値をデコードし、`borderPaint` に適用します。
  */
 internal fun MasuSheetNativeGridView.applyBorderPaint(encoded: Int) {
     val halfWidth = ((encoded ushr 24) and 0xFF).coerceAtLeast(1)
@@ -727,7 +611,8 @@ internal fun MasuSheetNativeGridView.applyBorderPaint(encoded: Int) {
 }
 
 /**
- * Breaks [text] into wrapped visual lines that fit within [maxWidthPx] using [paint].
+ * [EN] Splits `text` into visual lines that fit within `maxWidthPx` using `paint` (with character-level fallback for CJK text and JVM unit tests).
+ * [JA] `paint` の計測幅に基づき、日本語等の連続文字列や改行を含めて `maxWidthPx` 内に収まる視覚行リストへ折り返し分割します。
  */
 fun MasuSheetNativeGridView.wrapTextIntoLines(text: String, maxWidthPx: Float, paint: Paint): List<String> {
     if (text.isEmpty()) return listOf("")
@@ -772,8 +657,8 @@ fun MasuSheetNativeGridView.wrapTextIntoLines(text: String, maxWidthPx: Float, p
 }
 
 /**
- * [EN] Grid canvas helper that executes `drawCellContent` (draw cell content) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `drawCellContent` 処理を実行します。
+ * [EN] Draws a cell's formatted text (or raw formula when `showFormulas` is active), inline checkboxes, alignment, font style, and validation `[▾]` indicator inside `rect`.
+ * [JA] セルのテキスト（数式表示モード時は生数式）、セル内チェックボックス、文字揃え、太字／斜体／取消線、入力規則バッジを `rect` 内に描画します。
  */
 internal fun MasuSheetNativeGridView.drawCellContent(canvas: Canvas, rect: RectF, cell: NativeCellModel, defaultTextCol: Int) {
     val text = if (showFormulas && cell.editText.isNotEmpty()) cell.editText else cell.displayText
@@ -858,8 +743,8 @@ internal fun MasuSheetNativeGridView.drawCellContent(canvas: Canvas, rect: RectF
 }
 
 /**
- * [EN] Grid canvas helper that executes `drawInteractiveCheckboxLine` (draw interactive checkbox line) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `drawInteractiveCheckboxLine` 処理を実行します。
+ * [EN] Renders a line containing `☐` / `☑` vector checkbox glyphs alongside label text so individual checkboxes can be tapped in-cell.
+ * [JA] `☐`／`☑` を含むテキスト行をベクターチェックボックスアイコンとラベル文字に分解してセル内へ描画します。
  */
 internal fun MasuSheetNativeGridView.drawInteractiveCheckboxLine(
     canvas: Canvas,
@@ -922,8 +807,8 @@ internal fun MasuSheetNativeGridView.drawInteractiveCheckboxLine(
 }
 
 /**
- * [EN] Grid canvas helper that executes `resolveClickedCheckboxIndex` (resolve clicked checkbox index) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `resolveClickedCheckboxIndex` 処理を実行します。
+ * [EN] Hit-tests which 0-based `☐` / `☑` checkbox glyph inside `(row, col)` lies under `screenX`, or returns `null` if the tap missed.
+ * [JA] セル `(row, col)` 内の複数チェックボックスのうち、画面X座標 `screenX` でタップされたチェックボックスの0始まり番号を返します。
  */
 internal fun MasuSheetNativeGridView.resolveClickedCheckboxIndex(row: Int, col: Int, screenX: Float): Int? {
     val snap = currentViewport
@@ -964,8 +849,8 @@ internal fun MasuSheetNativeGridView.resolveClickedCheckboxIndex(row: Int, col: 
 }
 
 /**
- * [EN] Grid canvas helper that executes `renderSelectionAndHeadersOverlay` (render selection and headers overlay) on [MasuSheetNativeGridView].
- * [JA] グリッドキャンバス ([MasuSheetNativeGridView]) における `renderSelectionAndHeadersOverlay` 処理を実行します。
+ * [EN] Renders Layer 2 (selection border, AutoFill handle, spill ghost frame, 8-color formula highlights, row/column headers, freeze dividers, and filter/comment badges).
+ * [JA] レイヤー2（選択枠、オートフィルハンドル、スピル枠、8色数式参照ハイライト、行列ヘッダ、固定枠線、フィルター／コメント印）を描画します。
  */
 internal fun MasuSheetNativeGridView.renderSelectionAndHeadersOverlay(canvas: Canvas, w: Int, h: Int) {
     val snap = currentViewport
@@ -1033,7 +918,7 @@ internal fun MasuSheetNativeGridView.renderSelectionAndHeadersOverlay(canvas: Ca
         canvas.drawLine(freezeX, colHeaderHeightPx, freezeX, h.toFloat(), objectPaint)
     }
 
-    // 1b-spill (A6). Dynamic Array Spill Range Blue Ghost Border (`#2563EB`, matching `ui-egui/src/quadrant.rs`)
+    // 1b-spill (A6). Dynamic Array Spill Range Blue Ghost Border (`#2563EB`, dynamic array spill range indicator)
     if (snap.spillRanges.isNotEmpty()) {
         val maxR = (snap.rowHeights.size - 1).coerceAtLeast(0)
         val maxC = (snap.colWidths.size - 1).coerceAtLeast(0)
@@ -1160,7 +1045,7 @@ internal fun MasuSheetNativeGridView.renderSelectionAndHeadersOverlay(canvas: Ca
         }
     }
 
-    // 1b-ref. Spreadsheet / Original Rust MasuSheet 8-Color Formula Reference Highlights on Grid
+    // 1b-ref. 8-Color Formula Reference Highlights on Grid
     if (container.isEditingFormulaInCell()) {
         val maxR = (snap.rowHeights.size - 1).coerceAtLeast(0)
         val maxC = (snap.colWidths.size - 1).coerceAtLeast(0)

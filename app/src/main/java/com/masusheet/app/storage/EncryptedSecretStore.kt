@@ -88,11 +88,26 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
         }
     }
 
+    private fun resetCorruptedKeystoreEntry(prefKeyToClear: String?) {
+        runCatching {
+            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            if (ks.containsAlias(KEY_ALIAS)) {
+                ks.deleteEntry(KEY_ALIAS)
+            }
+        }
+        if (prefKeyToClear != null) {
+            prefs.edit().remove(prefKeyToClear).commit()
+        }
+    }
+
     override fun getSecret(key: String): String {
         fallbackMemory[key]?.let { return it }
         val encoded = prefs.getString(key, null)?.takeIf { it.isNotBlank() } ?: return ""
         val parts = encoded.split(':', limit = 2)
-        if (parts.size != 2) return ""
+        if (parts.size != 2) {
+            prefs.edit().remove(key).commit()
+            return ""
+        }
         val secretKey = getOrCreateMasterKey() ?: return ""
         return try {
             val iv = Base64.decode(parts[0], Base64.NO_WRAP)
@@ -101,6 +116,9 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
             cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(GCM_TAG_BITS, iv))
             String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
         } catch (_: Throwable) {
+            // [EN] Self-heal invalidated/corrupted Keystore key and purge unreadable ciphertext so subsequent saves persist cleanly.
+            // [JA] Keystore 鍵の失効や暗号文破損時は古い鍵・暗号文を安全に破棄し、次回保存時に新しい鍵で正常に永続化できるように自己修復します。
+            resetCorruptedKeystoreEntry(key)
             ""
         }
     }
@@ -111,21 +129,31 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
             clearSecret(key)
             return
         }
-        val secretKey = getOrCreateMasterKey()
-        if (secretKey == null) {
-            fallbackMemory[key] = clean
+        fun tryEncryptWith(secretKey: SecretKey): Boolean {
+            return try {
+                val cipher = Cipher.getInstance(TRANSFORMATION)
+                cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+                val ivB64 = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
+                val encB64 = Base64.encodeToString(cipher.doFinal(clean.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+                fallbackMemory.remove(key)
+                prefs.edit().putString(key, "$ivB64:$encB64").commit()
+                true
+            } catch (_: Throwable) {
+                false
+            }
+        }
+
+        val firstKey = getOrCreateMasterKey()
+        if (firstKey != null && tryEncryptWith(firstKey)) {
             return
         }
-        try {
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-            val ivB64 = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
-            val encB64 = Base64.encodeToString(cipher.doFinal(clean.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
-            fallbackMemory.remove(key)
-            prefs.edit().putString(key, "$ivB64:$encB64").commit()
-        } catch (_: Throwable) {
-            fallbackMemory[key] = clean
+        // Retry once after rotating a potentially invalidated AndroidKeyStore entry
+        resetCorruptedKeystoreEntry(key)
+        val regeneratedKey = getOrCreateMasterKey()
+        if (regeneratedKey != null && tryEncryptWith(regeneratedKey)) {
+            return
         }
+        fallbackMemory[key] = clean
     }
 
     override fun clearSecret(key: String) {

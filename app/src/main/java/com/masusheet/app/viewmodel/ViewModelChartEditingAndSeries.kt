@@ -1,30 +1,14 @@
-package com.masusheet.app
+package com.masusheet.app.viewmodel
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.Base64
+import com.masusheet.app.catalog.SpreadsheetChartTypeCatalog
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.model.ChartSeries
+import com.masusheet.app.model.DetectedSheetTableRange
+import com.masusheet.app.model.MasuSheetUiState
+import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.model.SheetObjectKind
 import kotlin.math.abs
-import kotlin.math.roundToInt
-import com.masusheet.app.MasuSheetViewModel.*
 
 /**
  * ============================================================================
@@ -38,8 +22,8 @@ import com.masusheet.app.MasuSheetViewModel.*
  */
 
 /**
- * Selects a sub-element inside a chart (`""`, `"xAxis"`, `"yAxis"`, `"series:0"`, `"series:1"`, ...)
- * and displays the active axis or series X/Y cell ranges in the status bar.
+ * [EN] Selects an internal chart sub-element (`""`, `"xAxis"`, `"yAxis"`, or `"series:<idx>"`) and shows its bound cell ranges in the status notice.
+ * [JA] グラフ内部の要素（全体・X軸・Y軸・個別データ系列）を選択状態にし、対応するシート参照範囲をステータス通知に表示します。
  */
 fun MasuSheetViewModel.onSelectChartSubElement(objectId: String, subElement: String) {
     val cur = _uiState.value
@@ -106,8 +90,8 @@ fun MasuSheetViewModel.onSelectChartSubElement(objectId: String, subElement: Str
 }
 
 /**
- * [EN] ViewModel action/helper `onOpenChartAxisFormatDialog` handling open chart axis format dialog while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onOpenChartAxisFormatDialog` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Opens or closes the Chart Axis Format dialog (`min`, `max`, `majorStep`, title, units) for the X or Y axis.
+ * [JA] 選択グラフのX軸またはY軸の書式設定ダイアログ（最小値・最大値・目盛間隔・軸ラベル等）を開閉します。
  */
 fun MasuSheetViewModel.onOpenChartAxisFormatDialog(objectId: String? = null, axis: String = "y", open: Boolean = true) {
     val cur = _uiState.value
@@ -543,11 +527,8 @@ fun MasuSheetViewModel.onResizeChartAxisRangeByDrag(
 }
 
 /**
- * Adds a new series to the chart from worksheet cells (no dummy numbers).
- * - If `customYRangeText` is provided, binds that Y range (and `customXRangeText` if provided).
- * - Otherwise, if there is an unplotted numeric column in the source table, binds that column.
- * - Otherwise, if the user has selected a multi-cell range on the sheet, binds that selection.
- * - Otherwise, adds a new series entry linked to the current X-Axis and starts Y-Axis cell range picking on the sheet!
+ * [EN] Adds a new data series to the target chart from explicit X/Y ranges, an unplotted table column, the active selection, or interactive Y-axis picking.
+ * [JA] 明示指定されたX/Y範囲、表内の未プロット数値列、現在のセル選択範囲、またはシート上の範囲選択モードから新規データ系列を追加します。
  */
 fun MasuSheetViewModel.onAddChartSeriesFromSheet(
     objectId: String? = null,
@@ -652,8 +633,8 @@ fun MasuSheetViewModel.onAddChartSeriesFromSheet(
 }
 
 /**
- * [EN] ViewModel action/helper `onRemoveChartSeriesAt` handling remove chart series at while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onRemoveChartSeriesAt` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Removes the data series at `seriesIndex` from the target chart (keeping at least one series) with Undo support.
+ * [JA] 最低1系列を残しつつ、対象グラフから `seriesIndex` 番目のデータ系列を削除し、Undo履歴に記録します。
  */
 fun MasuSheetViewModel.onRemoveChartSeriesAt(objectId: String? = null, seriesIndex: Int): Boolean {
     val cur = _uiState.value
@@ -689,8 +670,8 @@ fun MasuSheetViewModel.onRemoveChartSeriesAt(objectId: String? = null, seriesInd
 }
 
 /**
- * Binds the currently selected cell range on the sheet (`selStartRow..selEndRow`, `selStartCol..selEndCol`)
- * directly to the specified chart (or currently selected chart) and re-plots it immediately.
+ * [EN] Binds the currently selected worksheet cell range directly to the target chart and refreshes its categories and series.
+ * [JA] 現在シート上で選択されているセル範囲を対象グラフの元データ範囲として即座に紐づけ、グラフを再集計します。
  */
 fun MasuSheetViewModel.onBindCurrentSelectionToChart(objectId: String? = null): Boolean {
     val cur = _uiState.value
@@ -704,15 +685,15 @@ fun MasuSheetViewModel.onBindCurrentSelectionToChart(objectId: String? = null): 
 }
 
 /**
- * [EN] ViewModel action/helper `onApplyCurrentSelectionToChart` handling apply current selection to chart while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onApplyCurrentSelectionToChart` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Convenience alias for `onBindCurrentSelectionToChart` invoked by ribbon and dialog controls.
+ * [JA] 現在のセル選択範囲を対象グラフのデータ範囲として適用します（`onBindCurrentSelectionToChart` の委譲ラッパー）。
  */
 fun MasuSheetViewModel.onApplyCurrentSelectionToChart(chartId: String? = null): Boolean =
     onBindCurrentSelectionToChart(chartId)
 
 /**
- * [EN] ViewModel action/helper `onApplyChartSourceRange` handling apply chart source range while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onApplyChartSourceRange` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Applies `rangeText` to `chartId` with row/column orientation (`seriesInColumns`) and updates the chart immediately.
+ * [JA] 指定された範囲文字列 `rangeText` と系列方向（列方向／行方向）をグラフ `chartId` に適用してデータを更新します。
  */
 fun MasuSheetViewModel.onApplyChartSourceRange(
     chartId: String,
@@ -730,8 +711,8 @@ fun MasuSheetViewModel.onApplyChartSourceRange(
 }
 
 /**
- * [EN] ViewModel action/helper `onSwitchChartRowsAndColumns` handling switch chart rows and columns while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSwitchChartRowsAndColumns` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Transposes a chart's categories and series (swapping X categories with legend series) while preserving Undo history.
+ * [JA] 対象グラフの「行／列の切り替え」（カテゴリ軸と凡例系列の転置）を実行し、Undo履歴へ記録します。
  */
 fun MasuSheetViewModel.onSwitchChartRowsAndColumns(objectId: String? = null): Boolean {
     val cur = _uiState.value
@@ -777,14 +758,15 @@ fun MasuSheetViewModel.onSwitchChartRowsAndColumns(objectId: String? = null): Bo
 }
 
 /**
- * [EN] ViewModel action/helper `onSwitchChartRowColumn` handling switch chart row column while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onSwitchChartRowColumn` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Alias for `onSwitchChartRowsAndColumns` used by contextual chart ribbon actions.
+ * [JA] 選択グラフの行と列を入れ替えます（`onSwitchChartRowsAndColumns` の呼び出しエイリアス）。
  */
 fun MasuSheetViewModel.onSwitchChartRowColumn(objectId: String? = null): Boolean =
     onSwitchChartRowsAndColumns(objectId)
 
 /**
- * Re-evaluates a chart's `sourceRangeText` against the current worksheet cells and updates its categories & series.
+ * [EN] Re-reads cell values from a chart's `sourceRangeText` (and per-series X/Y ranges) so edits on the sheet reflect in the chart.
+ * [JA] グラフに紐づく `sourceRangeText` および各系列のX/Yセル範囲から最新値を再取得してグラフ表示を更新します。
  */
 fun MasuSheetViewModel.onRefreshChartFromSourceRange(objectId: String? = null): Boolean {
     val cur = _uiState.value
@@ -808,8 +790,8 @@ fun MasuSheetViewModel.onRefreshChartFromSourceRange(objectId: String? = null): 
 }
 
 /**
- * Parses `rangeText` (e.g. `A1:D5`, `Sales!B2:E8`, or single cell `B2` which auto-expands to the contiguous table),
- * extracts `categories` and `seriesList` from the sheet, and updates the target standalone or bound chart!
+ * [EN] Parses `rangeText` (auto-expanding single-cell inputs to the surrounding table), extracts categories and series, and updates the target chart.
+ * [JA] `rangeText` を解析（単一セル指定時は周囲の表へ自動拡張）してカテゴリと系列を再抽出し、対象グラフへ反映します。
  */
 fun MasuSheetViewModel.onUpdateChartDataRange(
     objectId: String? = null,
@@ -964,8 +946,8 @@ fun MasuSheetViewModel.onUpdateChartCustomSeriesAndCategories(
 }
 
 /**
- * [EN] ViewModel action/helper `onUpdateChartCustomSeriesAndCategories` handling update chart custom series and categories while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onUpdateChartCustomSeriesAndCategories` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Replaces a chart's title, category labels, and numeric series values from `(seriesName, doubleValues)` pairs with Undo support.
+ * [JA] グラフのタイトル・カテゴリラベル配列・各系列の数値リストを一括更新し、Undo履歴へ記録します。
  */
 fun MasuSheetViewModel.onUpdateChartCustomSeriesAndCategories(
     chartId: String,
@@ -985,7 +967,8 @@ fun MasuSheetViewModel.onUpdateChartCustomSeriesAndCategories(
 }
 
 /**
- * Scans the active worksheet for contiguous 2D data tables so the user can bind any table to a standalone chart with 1 tap.
+ * [EN] Scans the active worksheet for contiguous non-empty 2D tables so users can bind an existing table to a chart in one tap.
+ * [JA] アクティブシート上の連続した2次元データ表領域を自動走査・検出し、1タップでグラフへ紐づけられる候補一覧を返します。
  */
 fun MasuSheetViewModel.detectTablesOnCurrentSheet(): List<DetectedSheetTableRange> {
     val vp = _uiState.value.viewport
@@ -1046,8 +1029,8 @@ fun MasuSheetViewModel.detectTablesOnCurrentSheet(): List<DetectedSheetTableRang
 }
 
 /**
- * [EN] ViewModel action/helper `onChangeSelectedChartType` handling change selected chart type while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onChangeSelectedChartType` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Changes the chart subtype (`column`, `line`, `pie`, `scatter_lines`, etc.) of the currently selected chart while keeping its bound data intact.
+ * [JA] 元データとの紐づけを維持したまま、選択中のグラフの種類（サブタイプ）を変更します。
  */
 fun MasuSheetViewModel.onChangeSelectedChartType(chartType: String): Boolean {
     val cur = _uiState.value
@@ -1092,8 +1075,8 @@ fun MasuSheetViewModel.onChangeSelectedChartType(chartType: String): Boolean {
 }
 
 /**
- * [EN] ViewModel action/helper `onInsertOrUpdateChartFromPicker` handling insert or update chart from picker while keeping [MasuSheetUiState] and Undo history consistent.
- * [JA] [MasuSheetViewModel] の `onInsertOrUpdateChartFromPicker` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
+ * [EN] Updates the selected chart's subtype if one is selected (unless `insertNew = true`), or inserts a new chart of `chartType` and returns its ID.
+ * [JA] グラフ選択中（かつ `insertNew = false`）ならその種類を変更し、未選択または新規指定時は新しいグラフを挿入してIDを返します。
  */
 fun MasuSheetViewModel.onInsertOrUpdateChartFromPicker(chartType: String, insertNew: Boolean = false): String {
     val cur = _uiState.value
@@ -1135,7 +1118,8 @@ fun MasuSheetViewModel.onInsertOrUpdateChartFromPicker(chartType: String, insert
 
 
 /**
- * Updates a specific category label (`chartLabels[categoryIndex]`) inside a chart when double-clicked in-place.
+ * [EN] Updates `chartLabels[categoryIndex]` on `objectId` after an in-place double-tap label edit.
+ * [JA] グラフ上の軸ラベル直接編集で確定された `categoryIndex` 番目のカテゴリ名を更新します。
  */
 fun MasuSheetViewModel.onUpdateChartCategoryLabel(objectId: String, categoryIndex: Int, newLabel: String) {
     pushCustomOverlayUndoSnapshot(captureCustomOverlaySnapshot(engineStepsCount = 0))
@@ -1151,7 +1135,8 @@ fun MasuSheetViewModel.onUpdateChartCategoryLabel(objectId: String, categoryInde
 }
 
 /**
- * Updates a specific series name (`chartSeries[seriesIndex].name`) inside a chart when double-clicked in-place.
+ * [EN] Updates `chartSeries[seriesIndex].name` on `objectId` after an in-place legend edit.
+ * [JA] グラフ凡例の直接編集で確定された `seriesIndex` 番目の系列名を更新します。
  */
 fun MasuSheetViewModel.onUpdateChartSeriesName(objectId: String, seriesIndex: Int, newName: String) {
     pushCustomOverlayUndoSnapshot(captureCustomOverlaySnapshot(engineStepsCount = 0))
@@ -1169,7 +1154,8 @@ fun MasuSheetViewModel.onUpdateChartSeriesName(objectId: String, seriesIndex: In
 }
 
 /**
- * Updates a specific numeric data value inside a chart when double-clicked in-place.
+ * [EN] Updates `chartSeries[seriesIndex].values[categoryIndex]` (parsing formatted numbers) after an in-place chart value edit.
+ * [JA] グラフ上のデータ値直接編集で入力された数値をパースし、`seriesIndex` 系列の `categoryIndex` 番目の値を更新します。
  */
 fun MasuSheetViewModel.onUpdateChartDataValue(objectId: String, seriesIndex: Int, categoryIndex: Int, newValueText: String) {
     val cleaned = newValueText.replace(",", "").replace("¥", "").replace("$", "").trim()

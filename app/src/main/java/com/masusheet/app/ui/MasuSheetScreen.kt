@@ -1,110 +1,42 @@
-package com.masusheet.app
+package com.masusheet.app.ui
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import com.masusheet.app.storage.WindowHandoffManager
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.RectF
-import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
-import android.os.Bundle
-import android.text.Editable
-import android.text.InputType
-import android.text.Spannable
-import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
-import android.util.TypedValue
-import android.view.GestureDetector
-import android.view.Gravity
-import android.view.KeyEvent
-import android.view.MotionEvent
 import android.view.PointerIcon
-import android.view.VelocityTracker
 import android.view.View
-import android.view.ViewConfiguration
-import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputConnectionWrapper
-import android.view.inputmethod.InputContentInfo
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
-import android.widget.LinearLayout
-import android.widget.OverScroller
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -113,12 +45,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -126,25 +54,177 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.roundToInt
-import kotlin.math.sin
+import com.masusheet.app.SecondaryWorkbookActivity
+import com.masusheet.app.canvas.MasuSheetNativeSheetContainer
+import com.masusheet.app.catalog.SpreadsheetRibbonCatalog
+import com.masusheet.app.core.InlineCheckboxHelper
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.core.SpreadsheetI18n
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.ui.ai.AiSpreadsheetAssistantPanel
+import com.masusheet.app.ui.dialogs.MacroVbaStudioDialog
+import com.masusheet.app.ui.dialogs.MasuSheetSaveDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetChartAxisFormatDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetChartSelectDataDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetColorPickerDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetColumnFilterPopupDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetCommandCenterDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetCreatePivotTableDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetFunctionWizardDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetOpenSourceLicensesDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetPivotChartPickerDialog
+import com.masusheet.app.ui.dialogs.SpreadsheetPivotTableFieldsRightPane
+import com.masusheet.app.ui.dialogs.SpreadsheetZoomDialog
+import com.masusheet.app.ui.ribbon.MasuSheetFullRibbon
+import com.masusheet.app.ui.ribbon.MasuSheetPillButton
+import com.masusheet.app.ui.sheet.MasuSheetNativeFormulaBar
+import com.masusheet.app.ui.sheet.MasuSheetNativeSheetTabsBar
+import com.masusheet.app.viewmodel.MasuSheetViewModel
+import com.masusheet.app.viewmodel.computeColumnAutoCompleteSuggestion
+import com.masusheet.app.viewmodel.detectTablesOnCurrentSheet
+import com.masusheet.app.viewmodel.getActivePivotTable
+import com.masusheet.app.viewmodel.getAiApiKeyForModel
+import com.masusheet.app.viewmodel.getAiCustomEndpoint
+import com.masusheet.app.viewmodel.getAiCustomModelName
+import com.masusheet.app.viewmodel.getChartSourceTableColumns
+import com.masusheet.app.viewmodel.getMaterializedSheetObjectsForCurrentSheet
+import com.masusheet.app.viewmodel.onAddChartSeriesFromSheet
+import com.masusheet.app.viewmodel.onAddSheet
+import com.masusheet.app.viewmodel.onAnswerAiPlanQuestion
+import com.masusheet.app.viewmodel.onApplyColumnFilter
+import com.masusheet.app.viewmodel.onApplyPickedColor
+import com.masusheet.app.viewmodel.onApplyThemePreset
+import com.masusheet.app.viewmodel.onAssignPivotFieldToArea
+import com.masusheet.app.viewmodel.onBindCurrentSelectionToChart
+import com.masusheet.app.viewmodel.onBindSelectionAsChartXAxis
+import com.masusheet.app.viewmodel.onBindSelectionAsChartYAxis
+import com.masusheet.app.viewmodel.onCancelAiPlan
+import com.masusheet.app.viewmodel.onCancelPendingSave
+import com.masusheet.app.viewmodel.onClearColumnFilter
+import com.masusheet.app.viewmodel.onClearPivotTable
+import com.masusheet.app.viewmodel.onCloseOpenWorkbook
+import com.masusheet.app.viewmodel.onCompletePendingSaveAsync
+import com.masusheet.app.viewmodel.onConfirmSaveDirectlyToFolderAsync
+import com.masusheet.app.viewmodel.onCreateNewBlankWorkbookSession
+import com.masusheet.app.viewmodel.onCreatePivotTable
+import com.masusheet.app.viewmodel.onCyclePivotValueFieldAgg
+import com.masusheet.app.viewmodel.onCycleZoom
+import com.masusheet.app.viewmodel.onDefineName
+import com.masusheet.app.viewmodel.onDeleteMacro
+import com.masusheet.app.viewmodel.onDeletePivotTable
+import com.masusheet.app.viewmodel.onDeleteSheetAt
+import com.masusheet.app.viewmodel.onDeleteSheetObject
+import com.masusheet.app.viewmodel.onDismissColumnFilterMenu
+import com.masusheet.app.viewmodel.onDismissError
+import com.masusheet.app.viewmodel.onDismissPivotLauncher
+import com.masusheet.app.viewmodel.onDismissSaveDialog
+import com.masusheet.app.viewmodel.onDuplicateSheetAt
+import com.masusheet.app.viewmodel.onExecuteConfirmedAiPlan
+import com.masusheet.app.viewmodel.onFindAllCells
+import com.masusheet.app.viewmodel.onFindNext
+import com.masusheet.app.viewmodel.onFinishChartRangePickingOnSheet
+import com.masusheet.app.viewmodel.onFitZoomToSelection
+import com.masusheet.app.viewmodel.onGenerateVbaFromPrompt
+import com.masusheet.app.viewmodel.onGoToReference
+import com.masusheet.app.viewmodel.onGoToSpecial
+import com.masusheet.app.viewmodel.onHideSheetAt
+import com.masusheet.app.viewmodel.onImportWebAiJsonResponse
+import com.masusheet.app.viewmodel.onInsertChart
+import com.masusheet.app.viewmodel.onInsertImageBytes
+import com.masusheet.app.viewmodel.onInsertImageUriAsync
+import com.masusheet.app.viewmodel.onInsertOrUpdateChartFromPicker
+import com.masusheet.app.viewmodel.onInsertShape
+import com.masusheet.app.viewmodel.onInsertSheetBefore
+import com.masusheet.app.viewmodel.onInsertTextBox
+import com.masusheet.app.viewmodel.onLoadNextSample
+import com.masusheet.app.viewmodel.onLoadRepairChecklistSample
+import com.masusheet.app.viewmodel.onLoadSampleWorkbook
+import com.masusheet.app.viewmodel.onMovePivotFieldInArea
+import com.masusheet.app.viewmodel.onMoveSheet
+import com.masusheet.app.viewmodel.onNavigateToAddressOrRange
+import com.masusheet.app.viewmodel.onOpenChartAxisFormatDialog
+import com.masusheet.app.viewmodel.onOpenChartSelectDataDialog
+import com.masusheet.app.viewmodel.onOpenCreatePivotTableDialog
+import com.masusheet.app.viewmodel.onOpenDocumentUriAsync
+import com.masusheet.app.viewmodel.onOpenLicensesDialog
+import com.masusheet.app.viewmodel.onOpenPivotChartPicker
+import com.masusheet.app.viewmodel.onOpenZoomDialog
+import com.masusheet.app.viewmodel.onRefreshPivotTable
+import com.masusheet.app.viewmodel.onRemoveChartSeriesAt
+import com.masusheet.app.viewmodel.onRemovePivotValueFieldAt
+import com.masusheet.app.viewmodel.onRenameSheetAt
+import com.masusheet.app.viewmodel.onReplaceAllCells
+import com.masusheet.app.viewmodel.onReplaceCurrentCell
+import com.masusheet.app.viewmodel.onResetSelectedImageAspectRatio
+import com.masusheet.app.viewmodel.onResetSelectedObjectRotation
+import com.masusheet.app.viewmodel.onResizeAiPanelWidth
+import com.masusheet.app.viewmodel.onResizePivotPaneWidth
+import com.masusheet.app.viewmodel.onRollbackLastMacroRun
+import com.masusheet.app.viewmodel.onRotateSelectedObjectBy
+import com.masusheet.app.viewmodel.onRunMacro
+import com.masusheet.app.viewmodel.onSaveAiProviderSettings
+import com.masusheet.app.viewmodel.onSaveOrUpdateMacro
+import com.masusheet.app.viewmodel.onSelectActivePivotTable
+import com.masusheet.app.viewmodel.onSelectAiEditMode
+import com.masusheet.app.viewmodel.onSelectAiModel
+import com.masusheet.app.viewmodel.onSelectChartXAxisColumn
+import com.masusheet.app.viewmodel.onSelectExistingFileForSaveName
+import com.masusheet.app.viewmodel.onSelectFindMatch
+import com.masusheet.app.viewmodel.onSelectSaveDialogExtension
+import com.masusheet.app.viewmodel.onSelectSaveDialogFolderAsync
+import com.masusheet.app.viewmodel.onSelectSheetObject
+import com.masusheet.app.viewmodel.onSendAiPrompt
+import com.masusheet.app.viewmodel.onSetCellComment
+import com.masusheet.app.viewmodel.onSetCellHyperlink
+import com.masusheet.app.viewmodel.onSetPivotFilterValue
+import com.masusheet.app.viewmodel.onSetPivotGrandTotalsMode
+import com.masusheet.app.viewmodel.onSetPivotReportLayout
+import com.masusheet.app.viewmodel.onSetPivotStylePreset
+import com.masusheet.app.viewmodel.onSetPivotSubtotalsMode
+import com.masusheet.app.viewmodel.onSetZoomPercent
+import com.masusheet.app.viewmodel.onSortTableByColor
+import com.masusheet.app.viewmodel.onSortTableByColumn
+import com.masusheet.app.viewmodel.onStartChartAxisPickingOnSheet
+import com.masusheet.app.viewmodel.onStartChartRangePickingOnSheet
+import com.masusheet.app.viewmodel.onStartMacroRecording
+import com.masusheet.app.viewmodel.onStartVbaDebug
+import com.masusheet.app.viewmodel.onStepAiPlanQuestion
+import com.masusheet.app.viewmodel.onStepSheet
+import com.masusheet.app.viewmodel.onStepVbaDebug
+import com.masusheet.app.viewmodel.onStopMacroRecording
+import com.masusheet.app.viewmodel.onStopVbaDebug
+import com.masusheet.app.viewmodel.onSwitchChartRowColumn
+import com.masusheet.app.viewmodel.onSwitchOpenWorkbook
+import com.masusheet.app.viewmodel.onToggleAiPanel
+import com.masusheet.app.viewmodel.onToggleChartYAxisColumn
+import com.masusheet.app.viewmodel.onToggleDarkTheme
+import com.masusheet.app.viewmodel.onToggleLanguage
+import com.masusheet.app.viewmodel.onToggleMacroRelativeMode
+import com.masusheet.app.viewmodel.onToggleMaterial3Ui
+import com.masusheet.app.viewmodel.onTogglePivotBandedCols
+import com.masusheet.app.viewmodel.onTogglePivotBandedRows
+import com.masusheet.app.viewmodel.onTogglePivotBlankRows
+import com.masusheet.app.viewmodel.onTogglePivotFieldChecked
+import com.masusheet.app.viewmodel.onTogglePivotFieldsPane
+import com.masusheet.app.viewmodel.onTogglePivotRepeatLabels
+import com.masusheet.app.viewmodel.onTogglePivotRowGroupCollapse
+import com.masusheet.app.viewmodel.onToggleToolbar
+import com.masusheet.app.viewmodel.onTriggerExportPdfAsync
+import com.masusheet.app.viewmodel.onTriggerSaveAsync
+import com.masusheet.app.viewmodel.onUndoLastAiEdit
+import com.masusheet.app.viewmodel.onUpdateChartAxisFormat
+import com.masusheet.app.viewmodel.onUpdateChartCustomSeriesAndCategories
+import com.masusheet.app.viewmodel.onUpdateChartDataRange
+import com.masusheet.app.viewmodel.onUpdateChartSeriesRanges
+import com.masusheet.app.viewmodel.onUpdateSaveDialogBaseName
+import com.masusheet.app.viewmodel.onUpdateSelectedObjectFillColor
+import com.masusheet.app.viewmodel.onUpdateSelectedObjectStrokeColor
+import com.masusheet.app.viewmodel.onUpdateSelectedObjectStrokeWidth
+import com.masusheet.app.viewmodel.prepareWorkbookSessionForNewWindow
 
 /**
  * ============================================================================
@@ -284,7 +364,7 @@ fun MasuSheetScreen(
             } catch (_: Exception) {
             }
             commitActiveInCellEditIfNeeded()
-            viewModel.onOpenDocumentUri(uri.toString())
+            viewModel.onOpenDocumentUriAsync(uri.toString())
         }
     }
 
@@ -301,12 +381,13 @@ fun MasuSheetScreen(
                 } catch (_: Exception) {
                 }
             }
-            viewModel.onSelectSaveDialogFolder(viewModel.uiState.value.saveDialogFolderPath)
-            val firstAdded = viewModel.uiState.value.saveDialogExistingFiles.firstOrNull {
-                it.fullPath == uris.first().toString()
-            }
-            if (firstAdded != null) {
-                viewModel.onSelectExistingFileForSaveName(firstAdded)
+            viewModel.onSelectSaveDialogFolderAsync(viewModel.uiState.value.saveDialogFolderPath) {
+                val firstAdded = viewModel.uiState.value.saveDialogExistingFiles.firstOrNull {
+                    it.fullPath == uris.first().toString()
+                }
+                if (firstAdded != null) {
+                    viewModel.onSelectExistingFileForSaveName(firstAdded)
+                }
             }
         }
     }
@@ -315,7 +396,7 @@ fun MasuSheetScreen(
         contract = CreateTypedDocumentContract()
     ) { uri: Uri? ->
         if (uri != null) {
-            viewModel.onCompletePendingSave(uri.toString())
+            viewModel.onCompletePendingSaveAsync(uri.toString())
         } else {
             viewModel.onCancelPendingSave()
         }
@@ -326,7 +407,7 @@ fun MasuSheetScreen(
     ) { uri: Uri? ->
         if (uri != null) {
             commitActiveInCellEditIfNeeded()
-            viewModel.onInsertImageUri(uri.toString())
+            viewModel.onInsertImageUriAsync(uri.toString())
         }
     }
 
@@ -335,7 +416,7 @@ fun MasuSheetScreen(
     ) { uri: Uri? ->
         if (uri != null) {
             commitActiveInCellEditIfNeeded()
-            viewModel.onInsertImageUri(uri.toString())
+            viewModel.onInsertImageUriAsync(uri.toString())
         }
     }
 
@@ -361,7 +442,7 @@ fun MasuSheetScreen(
             } catch (_: Exception) {
                 // Ignore if provider does not support persistable permissions
             }
-            viewModel.onSelectSaveDialogFolder(treeUri.toString())
+            viewModel.onSelectSaveDialogFolderAsync(treeUri.toString())
         }
     }
 
@@ -497,11 +578,11 @@ fun MasuSheetScreen(
                     onOpenDocumentClick = launchOpenDocument,
                     onSaveClick = {
                         commitActiveInCellEditIfNeeded()
-                        viewModel.onTriggerSave()
+                        viewModel.onTriggerSaveAsync()
                     },
                     onExportPdfClick = {
                         commitActiveInCellEditIfNeeded()
-                        viewModel.onTriggerExportPdf()
+                        viewModel.onTriggerExportPdfAsync()
                     },
                     onLoadSampleClick = { sample ->
                         commitActiveInCellEditIfNeeded()
@@ -1272,7 +1353,7 @@ fun MasuSheetScreen(
                     state = state,
                     onUpdateBaseName = { viewModel.onUpdateSaveDialogBaseName(it) },
                     onSelectExtension = { viewModel.onSelectSaveDialogExtension(it) },
-                    onSelectFolder = { viewModel.onSelectSaveDialogFolder(it) },
+                    onSelectFolder = { viewModel.onSelectSaveDialogFolderAsync(it) },
                     onPickCustomFolder = {
                         val initialDownloadUri = Uri.parse(
                             "content://com.android.externalstorage.documents/document/primary%3ADownload"
@@ -1300,9 +1381,12 @@ fun MasuSheetScreen(
                         } else {
                             Uri.fromFile(java.io.File(item.fullPath)).toString()
                         }
-                        viewModel.onOpenDocumentUri(uriStr)
+                        viewModel.onOpenDocumentUriAsync(uriStr)
                     },
-                    onSaveDirectly = { viewModel.onConfirmSaveDirectlyToFolder() },
+                    onSaveDirectly = {
+                        viewModel.onConfirmSaveDirectlyToFolderAsync()
+                        true
+                    },
                     onOpenSystemPicker = {
                         val fullFileName = MasuSheetConfig.buildFileNameWithExtension(
                             state.saveDialogBaseName,
@@ -1344,6 +1428,13 @@ fun MasuSheetScreen(
             }
 
             // 6b. Create PivotTable / Recommended PivotTables Dialog
+            if (state.isOpenSourceLicensesDialogOpen) {
+                SpreadsheetOpenSourceLicensesDialog(
+                    isEn = state.language == "en",
+                    onDismiss = { viewModel.onOpenLicensesDialog(false) }
+                )
+            }
+
             if (state.isCreatePivotDialogOpen) {
                 val activePivot = viewModel.getActivePivotTable()
                 val defaultSrc = activePivot?.let {

@@ -1,23 +1,8 @@
-package com.masusheet.app
+package com.masusheet.app.model
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.core.SpreadsheetColorPalette
 import org.json.JSONObject
-import java.io.File
-import java.util.Base64
-import kotlin.math.roundToInt
 
 /**
  * ============================================================================
@@ -31,12 +16,8 @@ import kotlin.math.roundToInt
  */
 
 /**
- * Key representing the visual state of Layer 1 (cached static sheet content: backgrounds, gridlines,
- * merged cells, borders, text, and checkboxes).
- *
- * Notice that cell selection (`activeRow`, `activeCol`, `selStart..selEnd`) and cursor blink state
- * are intentionally EXCLUDED from this key so selecting cells or blinking the cursor NEVER
- * triggers a full grid redraw — only the lightweight overlay is invalidated by the OS.
+ * [EN] Immutable cache key for Layer 1's static bitmap; excludes selection and cursor blink state so moving selection never redraws static cells.
+ * [JA] 静的セル描画レイヤー（Layer 1）のキャッシュキーです。選択位置やカーソル点滅を含めないことで、セル移動時の全画面再描画を回避します。
  */
 data class GridLayerCacheKey(
     val uid: Long,

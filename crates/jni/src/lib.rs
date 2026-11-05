@@ -3,60 +3,96 @@
 //!
 //! **[EN]** Multi-session, panic-safe Rust JNI bridge connecting MasuSheet's Kotlin/Jetpack Compose
 //! UI and 2-layer hardware Canvas renderer with the `gridcraft-*` formula & `.xlsx` engine:
-//! - Isolates concurrent workbooks and `:window2` processes via `session_id` handles (`SESSIONS`).
-//! - Wraps every `extern "system"` JNI boundary in `std::panic::catch_unwind` to prevent `SIGABRT`.
+//! - Isolates concurrent workbooks and `:window2` processes via bounded `session_id` handles (`SESSIONS`).
+//! - Denies `unsafe_code` across all internal modules (`dto`, `viewport`, `objects`), permitting
+//!   `#[unsafe(no_mangle)]` exclusively on the 8 `extern "system"` JNI export entry points.
+//! - Wraps every JNI boundary in `std::panic::catch_unwind` and clears pending JVM exceptions.
 //! - Exports visible vs. hidden sheet index mappings, exact Undo/Redo stack depths, dynamic
-//!   scrollable viewport bounds, full-sheet cell batch reads (`jni.readSheetCells`), and PDF export.
+//!   scrollable viewport bounds, cross-sheet cell batch reads (`jni.readSheetCells`), ECMA-376
+//!   OOXML chart/image/shape persistence, and vector PDF export.
 //!
 //! **[JA]** MasuSheet の Kotlin / Jetpack Compose UI・2層 Canvas 描画エンジンと Rust 製表計算エンジンを接続する
 //! マルチセッション・パニック保護付き JNI ブリッジです：
 //! - `session_id` ハンドルにより複数ブックおよび別ウィンドウ（`:window2`）のセッションを独立管理します。
-//! - すべての JNI 境界を `catch_unwind` で保護し、破損ファイル入力時などのネイティブ強制終了を防止します。
-//! - 非表示シートのインデックス分離、正確な Undo/Redo 深さ、動的な大規模ビューポート取得、PDF出力を提供します。
-#![allow(unsafe_code)]
+//! - 内部モジュール（`dto`, `viewport`, `objects`）では `unsafe` コードを全面禁止し、8個の JNI エクスポート宣言のみに限定しています。
+//! - すべての JNI 境界を `catch_unwind` と JVM 例外クリア処理で保護し、ネイティブ強制終了を防止します。
+//! - 非表示シートのインデックス分離、Undo/Redo 深さ、動的ビューポート取得、クロスシート読込、OOXML オブジェクト同期、PDF出力を提供します。
 
-use std::collections::{BTreeSet, HashMap};
+mod dto;
+mod objects;
+mod viewport;
+
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use gridcraft_core::{CellRef, RangeRef, Value};
 use gridcraft_engine::cmd::print::{PrintOptions, layouts, render_pdf};
 use gridcraft_engine::{DocState, Session, Trust};
-use gridcraft_model::{
-    Anchor, AnchorMode, BorderLine, BorderStyle, Chart, ChartKind, Color, HAlign, Image,
-    LegendPos, PatternType, Series, Shape, ShapeFormat, ShapeKind, SparklineKind, Style, VAlign,
-    ValidationKind, Visibility, Workbook,
-};
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jbyteArray, jint, jlong, jstring};
-use serde::Serialize;
 use serde_json::{Value as Json, json};
 
-static SESSIONS: LazyLock<Mutex<HashMap<i64, Arc<Mutex<Session>>>>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
-    let mut s = Session::new();
-    let _ = s.execute("file.new", json!({"sample": "sales"}));
-    map.insert(0, Arc::new(Mutex::new(s)));
-    Mutex::new(map)
-});
+use crate::dto::empty_viewport_dto;
+use crate::objects::{read_workbook_objects_json, sync_workbook_objects_json};
+use crate::viewport::{ViewportRequest, build_viewport_dto, read_sheet_cells_json};
 
+/// [EN] Maximum concurrent workbook sessions retained in `SESSIONS` per OS process to guard against
+///      unbounded native memory growth if a caller forgets to close old handles.
+/// [JA] プロセス内で同時保持するネイティブセッション数の上限です（ハンドル閉じ忘れによるメモリ枯渇を防止）。
+const MAX_CONCURRENT_SESSIONS: usize = 64;
+
+/// [EN] Minimal static fallback JSON returned if serializing or allocating a large JNI string fails.
+/// [JA] 大規模 JSON 文字列のシリアライズまたは JNI 確保に失敗した際の最小フォールバック応答です。
+const FALLBACK_ERROR_JSON: &str = "{\"ok\":false,\"error\":\"JNI response allocation failed\"}";
+
+/// [EN] Process-global registry of active workbook sessions keyed by positive `session_id` (`0` is
+///      lazily allocated only if a legacy single-session wrapper invokes it).
+/// [JA] 正の `session_id` をキーとして独立した `Session` を保持するグローバルレジストリです。
+static SESSIONS: LazyLock<Mutex<HashMap<i64, Arc<Mutex<Session>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// [EN] Monotonically increasing positive session handle generator (`1, 2, 3, ...`).
+/// [JA] 単調増加する正のセッション ID 生成カウンタ（`1` 始まり）です。
 static NEXT_SESSION_ID: AtomicI64 = AtomicI64::new(1);
 
-fn get_or_create_session(session_id: i64) -> Arc<Mutex<Session>> {
+/// [EN] Evicts the lowest positive `session_id` if the session map reaches [`MAX_CONCURRENT_SESSIONS`].
+/// [JA] セッション数が上限 [`MAX_CONCURRENT_SESSIONS`] に達した場合、最も古い正のセッション ID を解放します。
+fn prune_sessions_if_needed(map: &mut HashMap<i64, Arc<Mutex<Session>>>) {
+    while map.len() >= MAX_CONCURRENT_SESSIONS {
+        let Some(&oldest_id) = map.keys().filter(|&&k| k > 0).min() else {
+            break;
+        };
+        map.remove(&oldest_id);
+    }
+}
+
+/// [EN] Looks up an existing session handle (`>= 0`), creating a blank workbook session lazily for
+///      valid non-negative handles when needed. Negative handles are rejected (`None`).
+/// [JA] 非負の `session_id` に対応するセッションを取得（未作成時は空ブックで遅延初期化）します。
+///      負の ID は不正ハンドルとして `None` を返します。
+fn get_or_create_session(session_id: i64) -> Option<Arc<Mutex<Session>>> {
+    if session_id < 0 {
+        return None;
+    }
     let mut map = SESSIONS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    map.entry(session_id)
-        .or_insert_with(|| {
-            let mut s = Session::new();
-            let _ = s.new_workbook();
-            Arc::new(Mutex::new(s))
-        })
-        .clone()
+    if let Some(existing) = map.get(&session_id) {
+        return Some(Arc::clone(existing));
+    }
+    prune_sessions_if_needed(&mut map);
+    let mut s = Session::new();
+    let _ = s.new_workbook();
+    let arc = Arc::new(Mutex::new(s));
+    map.insert(session_id, Arc::clone(&arc));
+    Some(arc)
 }
 
+/// [EN] Allocates a new isolated workbook session initialized with `sample` (`"blank"` or one of
+///      `"sales"`, `"budget"`, `"grades"`, `"repair"`) and returns its positive `session_id`.
+/// [JA] 指定サンプル（`"blank"` または組み込みサンプル名）で新しい独立セッションを生成し、正の `session_id` を返します。
 pub fn create_session_handle(sample: &str) -> i64 {
     let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
     let mut s = Session::new();
@@ -70,12 +106,15 @@ pub fn create_session_handle(sample: &str) -> i64 {
     let mut map = SESSIONS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    prune_sessions_if_needed(&mut map);
     map.insert(id, Arc::new(Mutex::new(s)));
     id
 }
 
+/// [EN] Releases a workbook session handle from native memory (`session_id >= 0`).
+/// [JA] 指定されたセッションハンドルを解放し、ネイティブメモリから破棄します。
 pub fn close_session_handle(session_id: i64) {
-    if session_id == 0 {
+    if session_id < 0 {
         return;
     }
     let mut map = SESSIONS
@@ -84,1388 +123,12 @@ pub fn close_session_handle(session_id: i64) {
     map.remove(&session_id);
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CellDto {
-    r: u32,
-    c: u32,
-    t: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    e: String,
-    #[serde(skip_serializing_if = "is_zero")]
-    bg: u32,
-    #[serde(skip_serializing_if = "is_zero")]
-    fg: u32,
-    fs: f32,
-    #[serde(skip_serializing_if = "is_zero")]
-    fl: u32,
-    #[serde(skip_serializing_if = "is_zero")]
-    bt: u32,
-    #[serde(skip_serializing_if = "is_zero")]
-    br: u32,
-    #[serde(skip_serializing_if = "is_zero")]
-    bb: u32,
-    #[serde(skip_serializing_if = "is_zero")]
-    bl: u32,
-}
-
-fn is_zero(v: &u32) -> bool {
-    *v == 0
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SparklineDto {
-    r: u32,
-    c: u32,
-    source: String,
-    kind: &'static str,
-    color: u32,
-    markers: bool,
-    values: Vec<f64>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ValidationDto {
-    range: String,
-    kind: &'static str,
-    f1: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    f2: String,
-    in_cell_dropdown: bool,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    input_title: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    input_message: String,
-    show_input: bool,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    error_title: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    error_message: String,
-    show_error: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    items: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CommentDto {
-    cell: String,
-    author: String,
-    text: String,
-    resolved: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HyperlinkDto {
-    cell: String,
-    target: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    tooltip: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DefinedNameDto {
-    name: String,
-    refers_to: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ViewportDto {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Json>,
-    session_id: i64,
-    uid: u64,
-    revision: u64,
-    undo_depth: usize,
-    redo_depth: usize,
-    title: String,
-    is_dirty: bool,
-    sheet_index: usize,
-    total_sheet_count: usize,
-    sheet_name: String,
-    sheet_names: Vec<String>,
-    visible_sheet_indices: Vec<usize>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    hidden_sheet_names: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    hidden_sheet_indices: Vec<usize>,
-    used_end_row: u32,
-    used_end_col: u32,
-    can_undo: bool,
-    can_redo: bool,
-    active_row: u32,
-    active_col: u32,
-    sel_start_row: u32,
-    sel_start_col: u32,
-    sel_end_row: u32,
-    sel_end_col: u32,
-    active_address: String,
-    active_edit_text: String,
-    active_display_text: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    active_spill_formula: String,
-    #[serde(skip_serializing_if = "is_zero")]
-    freeze_rows: u32,
-    #[serde(skip_serializing_if = "is_zero")]
-    freeze_cols: u32,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    theme_colors: Vec<u32>,
-    col_widths: Vec<f32>,
-    row_heights: Vec<f32>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    hidden_rows: Vec<u32>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    hidden_cols: Vec<u32>,
-    merges: Vec<[u32; 4]>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    spill_ranges: Vec<[u32; 4]>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    sparklines: Vec<SparklineDto>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    validations: Vec<ValidationDto>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    comments: Vec<CommentDto>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    hyperlinks: Vec<HyperlinkDto>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    defined_names: Vec<DefinedNameDto>,
-    cells: Vec<CellDto>,
-}
-
-fn empty_viewport_dto(session_id: i64, err: Option<String>, result: Option<Json>) -> ViewportDto {
-    ViewportDto {
-        ok: err.is_none(),
-        error: err,
-        result,
-        session_id,
-        uid: 0,
-        revision: 0,
-        undo_depth: 0,
-        redo_depth: 0,
-        title: "Book1.xlsx".into(),
-        is_dirty: false,
-        sheet_index: 0,
-        total_sheet_count: 1,
-        sheet_name: "Sheet1".into(),
-        sheet_names: vec!["Sheet1".into()],
-        visible_sheet_indices: vec![0],
-        hidden_sheet_names: vec![],
-        hidden_sheet_indices: vec![],
-        used_end_row: 0,
-        used_end_col: 0,
-        can_undo: false,
-        can_redo: false,
-        active_row: 0,
-        active_col: 0,
-        sel_start_row: 0,
-        sel_start_col: 0,
-        sel_end_row: 0,
-        sel_end_col: 0,
-        active_address: "A1".into(),
-        active_edit_text: String::new(),
-        active_display_text: String::new(),
-        active_spill_formula: String::new(),
-        freeze_rows: 0,
-        freeze_cols: 0,
-        theme_colors: vec![],
-        col_widths: vec![64.0; 26],
-        row_heights: vec![20.0; 60],
-        hidden_rows: vec![],
-        hidden_cols: vec![],
-        merges: vec![],
-        spill_ranges: vec![],
-        sparklines: vec![],
-        validations: vec![],
-        comments: vec![],
-        hyperlinks: vec![],
-        defined_names: vec![],
-        cells: vec![],
-    }
-}
-
-fn resolve_argb(c: &Color, wb: &Workbook) -> u32 {
-    match c.resolve(&wb.theme) {
-        Some([r, g, b]) => 0xFF00_0000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32),
-        None => 0,
-    }
-}
-
-fn encode_border(line: &BorderLine, wb: &Workbook) -> u32 {
-    if line.style == BorderStyle::None {
-        return 0;
-    }
-    let width_half_px: u32 = match line.style {
-        BorderStyle::None => 0,
-        BorderStyle::Hair
-        | BorderStyle::Dotted
-        | BorderStyle::Dashed
-        | BorderStyle::Thin
-        | BorderStyle::DashDot
-        | BorderStyle::DashDotDot => 2,
-        BorderStyle::Medium
-        | BorderStyle::MediumDashed
-        | BorderStyle::MediumDashDot
-        | BorderStyle::MediumDashDotDot
-        | BorderStyle::SlantDashDot => 4,
-        BorderStyle::Thick | BorderStyle::Double => 6,
-    };
-    let rgb = match line.color.resolve(&wb.theme) {
-        Some([r, g, b]) => ((r as u32) << 16) | ((g as u32) << 8) | (b as u32),
-        None => 0x64748B,
-    };
-    (width_half_px << 24) | rgb
-}
-
-fn encode_style_flags(style: &Style, val: &Value) -> u32 {
-    let mut fl = 0u32;
-    if style.font.bold {
-        fl |= 1;
-    }
-    if style.font.italic {
-        fl |= 2;
-    }
-    if style.font.underline != gridcraft_model::Underline::None {
-        fl |= 4;
-    }
-    if style.font.strike {
-        fl |= 8;
-    }
-    if style.align.wrap {
-        fl |= 16;
-    }
-    let h_code: u32 = match style.align.h {
-        HAlign::Center | HAlign::CenterAcross | HAlign::Distributed => 1,
-        HAlign::Right => 2,
-        HAlign::Left | HAlign::Fill | HAlign::Justify => 0,
-        HAlign::General => match val {
-            Value::Number(_) => 2,
-            Value::Bool(_) | Value::Error(_) => 1,
-            _ => 0,
-        },
-    };
-    let v_code: u32 = match style.align.v {
-        VAlign::Top => 0,
-        VAlign::Center | VAlign::Justify | VAlign::Distributed => 1,
-        VAlign::Bottom => 2,
-    };
-    fl |= (h_code & 3) << 5;
-    fl |= (v_code & 3) << 7;
-    fl
-}
-
-fn collect_sheet_tabs(wb: &Workbook) -> (Vec<String>, Vec<usize>, Vec<String>, Vec<usize>) {
-    let mut vis_names = Vec::new();
-    let mut vis_indices = Vec::new();
-    let mut hid_names = Vec::new();
-    let mut hid_indices = Vec::new();
-    for (idx, sh) in wb.sheets.iter().enumerate() {
-        if sh.visibility == Visibility::Visible {
-            vis_names.push(sh.name.clone());
-            vis_indices.push(idx);
-        } else {
-            hid_names.push(sh.name.clone());
-            hid_indices.push(idx);
-        }
-    }
-    (vis_names, vis_indices, hid_names, hid_indices)
-}
-
-fn build_cell_dto(
-    wb: &Workbook,
-    sh: &gridcraft_model::Sheet,
-    sheet_index: usize,
-    cref: CellRef,
-    cf_cache: &mut Option<gridcraft_engine::cf::CfCache>,
-) -> Option<CellDto> {
-    let style_id = sh.style_id(cref);
-    let style = wb.styles.get(style_id);
-    let val = sh.value(cref);
-    let disp = if !val.is_empty() || sh.show_formulas {
-        gridcraft_engine::display::cell_text(wb, sh, cref)
-    } else {
-        String::new()
-    };
-    let edit = if !disp.is_empty() {
-        let et = gridcraft_engine::display::edit_text(wb, sh, cref);
-        if et != disp { et } else { String::new() }
-    } else {
-        String::new()
-    };
-
-    let mut bg = if style.fill.pattern != PatternType::None {
-        let fg_c = resolve_argb(&style.fill.fg, wb);
-        if fg_c != 0 {
-            fg_c
-        } else {
-            resolve_argb(&style.fill.bg, wb)
-        }
-    } else {
-        0
-    };
-    let mut fg = resolve_argb(&style.font.color, wb);
-    let bt = encode_border(&style.borders.top, wb);
-    let mut br = encode_border(&style.borders.right, wb);
-    let mut bb = encode_border(&style.borders.bottom, wb);
-    let bl = encode_border(&style.borders.left, wb);
-    let mut fl = encode_style_flags(style, &val);
-
-    if let Some(cache) = cf_cache
-        && let Some(cf_look) = cache.look(wb, sheet_index, cref)
-    {
-        if let Some([r, g, b]) = cf_look.scale_fill {
-            bg = 0xFF00_0000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
-        }
-        if let Some(cf_st) = &cf_look.style {
-            if cf_st.fill.pattern != PatternType::None {
-                let cf_bg = resolve_argb(&cf_st.fill.fg, wb);
-                if cf_bg != 0 {
-                    bg = cf_bg;
-                }
-            }
-            let cf_fg = resolve_argb(&cf_st.font.color, wb);
-            if cf_fg != 0 {
-                fg = cf_fg;
-            }
-            if cf_st.font.bold {
-                fl |= 1;
-            }
-            if cf_st.font.italic {
-                fl |= 2;
-            }
-        }
-    }
-
-    if let Some(m) = sh.merge_at(cref)
-        && m.start == cref
-    {
-        if br == 0 {
-            let right_style = wb.styles.get(sh.style_id(CellRef::new(m.start.row, m.end.col)));
-            br = encode_border(&right_style.borders.right, wb);
-        }
-        if bb == 0 {
-            let bot_style = wb.styles.get(sh.style_id(CellRef::new(m.end.row, m.start.col)));
-            bb = encode_border(&bot_style.borders.bottom, wb);
-        }
-    }
-
-    if !disp.is_empty() || bg != 0 || fg != 0 || bt != 0 || br != 0 || bb != 0 || bl != 0 || fl != 0 {
-        Some(CellDto {
-            r: cref.row,
-            c: cref.col,
-            t: disp,
-            e: edit,
-            bg,
-            fg,
-            fs: style.font.size,
-            fl,
-            bt,
-            br,
-            bb,
-            bl,
-        })
-    } else {
-        None
-    }
-}
-
-fn build_viewport_dto(
-    session_id: i64,
-    s: &Session,
-    max_r_req: u32,
-    max_c_req: u32,
-    err: Option<String>,
-    result: Option<Json>,
-) -> ViewportDto {
-    let Some(doc) = s.active() else {
-        return empty_viewport_dto(session_id, err, result);
-    };
-
-    let wb = &doc.wb;
-    let sheet_index = wb.active_sheet();
-    let total_sheet_count = wb.sheets.len();
-    let (sheet_names, visible_sheet_indices, hidden_sheet_names, hidden_sheet_indices) =
-        collect_sheet_tabs(wb);
-    let theme_colors: Vec<u32> = wb
-        .theme
-        .colors
-        .iter()
-        .take(10)
-        .map(|&c| 0xFF00_0000 | (c & 0x00FF_FFFF))
-        .collect();
-
-    let Some(sh) = wb.sheet(sheet_index) else {
-        let mut dto = empty_viewport_dto(session_id, Some("No active sheet".into()), result);
-        dto.uid = doc.uid;
-        dto.revision = doc.revision;
-        dto.undo_depth = doc.undo.len();
-        dto.redo_depth = doc.redo.len();
-        dto.title = doc.display_title();
-        dto.is_dirty = doc.is_dirty();
-        dto.sheet_index = sheet_index;
-        dto.total_sheet_count = total_sheet_count;
-        dto.sheet_names = sheet_names;
-        dto.visible_sheet_indices = visible_sheet_indices;
-        dto.hidden_sheet_names = hidden_sheet_names;
-        dto.hidden_sheet_indices = hidden_sheet_indices;
-        dto.can_undo = !doc.undo.is_empty();
-        dto.can_redo = !doc.redo.is_empty();
-        dto.theme_colors = theme_colors;
-        return dto;
-    };
-
-    let used_opt = sh.used_range();
-    let used_end_row = used_opt.map_or(0, |u| u.end.row);
-    let used_end_col = used_opt.map_or(0, |u| u.end.col);
-
-    // Dynamic viewport bounds: automatically cover sheets up to 5,000 rows × 200 cols on load,
-    // and expand up to 20,000 rows × 512 cols when requested as the user scrolls.
-    let auto_row = used_end_row.saturating_add(30).clamp(60, 5_000);
-    let req_row = max_r_req.clamp(60, 20_000);
-    let sel_row = doc.selection.active.row.saturating_add(30).min(20_000);
-    let max_row = auto_row.max(req_row).max(sel_row);
-
-    let auto_col = used_end_col.saturating_add(10).clamp(26, 200);
-    let req_col = max_c_req.clamp(26, 512);
-    let sel_col = doc.selection.active.col.saturating_add(10).min(512);
-    let max_col = auto_col.max(req_col).max(sel_col);
-
-    let mut col_widths = Vec::with_capacity((max_col + 1) as usize);
-    let mut hidden_cols = Vec::new();
-    for c in 0..=max_col {
-        if sh.is_col_hidden(c) {
-            col_widths.push(0.0);
-            hidden_cols.push(c);
-        } else {
-            col_widths.push(sh.col_width(c));
-        }
-    }
-
-    let mut row_heights = Vec::with_capacity((max_row + 1) as usize);
-    let mut hidden_rows = Vec::new();
-    for r in 0..=max_row {
-        if sh.is_row_hidden(r) {
-            row_heights.push(0.0);
-            hidden_rows.push(r);
-        } else {
-            row_heights.push(sh.row_height(r));
-        }
-    }
-
-    let viewport_range = RangeRef::new(CellRef::new(0, 0), CellRef::new(max_row, max_col));
-    let mut merges = Vec::new();
-    let mut cell_coords: BTreeSet<CellRef> = sh.cells.iter_range(viewport_range).map(|(c, _)| c).collect();
-    for m in &sh.merges {
-        if m.intersection(&viewport_range).is_some() {
-            merges.push([m.start.row, m.start.col, m.end.row, m.end.col]);
-            cell_coords.insert(m.start);
-        }
-    }
-
-    let mut spill_ranges = Vec::new();
-    for r in sh.spill_ranges.values() {
-        if r.intersection(&viewport_range).is_some() {
-            spill_ranges.push([r.start.row, r.start.col, r.end.row, r.end.col]);
-        }
-    }
-    for &c in sh.spill.keys() {
-        if viewport_range.contains(c) {
-            cell_coords.insert(c);
-        }
-    }
-
-    let (freeze_rows, freeze_cols) = sh.freeze.unwrap_or((0, 0));
-    let active_cell = sh
-        .merge_at(doc.selection.active)
-        .map(|m| m.start)
-        .unwrap_or(doc.selection.active);
-    let sel_cur = doc.selection.current();
-    let active_address = active_cell.to_string();
-    let active_edit_text = gridcraft_engine::display::edit_text(wb, sh, active_cell);
-    let active_display_text = gridcraft_engine::display::cell_text(wb, sh, active_cell);
-    let active_spill_formula = sh
-        .spill_anchor(active_cell)
-        .map(|anchor| gridcraft_engine::display::edit_text(wb, sh, anchor))
-        .unwrap_or_default();
-
-    let sparklines = collect_sparklines(wb, sh, sheet_index, viewport_range);
-    let validations = collect_validations(wb, sh, sheet_index);
-    let comments: Vec<CommentDto> = sh
-        .comments
-        .iter()
-        .map(|(c, cmt)| CommentDto {
-            cell: c.a1(),
-            author: cmt.author.clone(),
-            text: cmt.text.clone(),
-            resolved: cmt.resolved,
-        })
-        .collect();
-    let hyperlinks: Vec<HyperlinkDto> = sh
-        .hyperlinks
-        .iter()
-        .map(|(c, h)| HyperlinkDto {
-            cell: c.a1(),
-            target: h.target.clone(),
-            tooltip: h.tooltip.clone().unwrap_or_default(),
-        })
-        .collect();
-    let defined_names: Vec<DefinedNameDto> = wb
-        .names
-        .iter()
-        .filter(|n| !n.hidden && !n.name.starts_with("_gc_") && !n.name.starts_with("_sc_"))
-        .map(|n| DefinedNameDto {
-            name: n.name.clone(),
-            refers_to: n.formula.clone(),
-        })
-        .collect();
-
-    let mut cf_cache = (!sh.cond_formats.is_empty()).then(gridcraft_engine::cf::CfCache::new);
-    let mut cells = Vec::with_capacity(cell_coords.len());
-    for cref in cell_coords {
-        if let Some(cell_dto) = build_cell_dto(wb, sh, sheet_index, cref, &mut cf_cache) {
-            cells.push(cell_dto);
-        }
-    }
-
-    ViewportDto {
-        ok: err.is_none(),
-        error: err,
-        result,
-        session_id,
-        uid: doc.uid,
-        revision: doc.revision,
-        undo_depth: doc.undo.len(),
-        redo_depth: doc.redo.len(),
-        title: doc.display_title(),
-        is_dirty: doc.is_dirty(),
-        sheet_index,
-        total_sheet_count,
-        sheet_name: sh.name.clone(),
-        sheet_names,
-        visible_sheet_indices,
-        hidden_sheet_names,
-        hidden_sheet_indices,
-        used_end_row,
-        used_end_col,
-        can_undo: !doc.undo.is_empty(),
-        can_redo: !doc.redo.is_empty(),
-        active_row: active_cell.row,
-        active_col: active_cell.col,
-        sel_start_row: sel_cur.start.row,
-        sel_start_col: sel_cur.start.col,
-        sel_end_row: sel_cur.end.row,
-        sel_end_col: sel_cur.end.col,
-        active_address,
-        active_edit_text,
-        active_display_text,
-        active_spill_formula,
-        freeze_rows,
-        freeze_cols,
-        theme_colors,
-        col_widths,
-        row_heights,
-        hidden_rows,
-        hidden_cols,
-        merges,
-        spill_ranges,
-        sparklines,
-        validations,
-        comments,
-        hyperlinks,
-        defined_names,
-        cells,
-    }
-}
-
-fn collect_sparklines(
-    wb: &Workbook,
-    sh: &gridcraft_model::Sheet,
-    sheet_index: usize,
-    viewport_range: RangeRef,
-) -> Vec<SparklineDto> {
-    let mut out = Vec::new();
-    for sp in &sh.sparklines {
-        if viewport_range.contains(sp.cell) {
-            let values: Vec<f64> =
-                match gridcraft_engine::calc::evaluate(wb, sheet_index, sp.cell, &sp.source) {
-                    Value::Array(a) => a.data.iter().filter_map(Value::as_f64).collect(),
-                    v => v.as_f64().into_iter().collect(),
-                };
-            let kind = match sp.kind {
-                SparklineKind::Line => "line",
-                SparklineKind::Column => "column",
-                SparklineKind::WinLoss => "winLoss",
-            };
-            let c = resolve_argb(&sp.color, wb);
-            out.push(SparklineDto {
-                r: sp.cell.row,
-                c: sp.cell.col,
-                source: sp.source.clone(),
-                kind,
-                color: if c != 0 { c } else { 0xFF2B_7CD3 },
-                markers: sp.markers,
-                values,
-            });
-        }
-    }
-    out
-}
-
-fn collect_validations(
-    wb: &Workbook,
-    sh: &gridcraft_model::Sheet,
-    sheet_index: usize,
-) -> Vec<ValidationDto> {
-    let mut out = Vec::new();
-    for dv in &sh.validations {
-        let kind_str = match dv.kind {
-            ValidationKind::Any => "any",
-            ValidationKind::Whole => "whole",
-            ValidationKind::Decimal => "decimal",
-            ValidationKind::List => "list",
-            ValidationKind::Date => "date",
-            ValidationKind::Time => "time",
-            ValidationKind::TextLength => "textLength",
-            ValidationKind::Custom => "custom",
-        };
-        let items = if dv.kind == ValidationKind::List {
-            gridcraft_engine::cmd::data::list_items(wb, sheet_index, dv)
-        } else {
-            vec![]
-        };
-        for r in &dv.ranges {
-            out.push(ValidationDto {
-                range: r.a1(),
-                kind: kind_str,
-                f1: dv.f1.clone(),
-                f2: dv.f2.clone().unwrap_or_default(),
-                in_cell_dropdown: dv.in_cell_dropdown,
-                input_title: dv.input_title.clone(),
-                input_message: dv.input_message.clone(),
-                show_input: dv.show_input,
-                error_title: dv.error_title.clone(),
-                error_message: dv.error_message.clone(),
-                show_error: dv.show_error,
-                items: items.clone(),
-            });
-        }
-    }
-    out
-}
-
-/// Reads sparse cells from any sheet in the workbook without switching the active sheet or
-/// truncating to the viewport (used by PivotTable refresh and full-sheet CSV/TSV export).
-fn read_sheet_cells_json(s: &Session, params: &Json) -> Result<Json, String> {
-    let doc = s.active().ok_or_else(|| "No active workbook".to_string())?;
-    let wb = &doc.wb;
-    let si = params
-        .get("sheetIndex")
-        .and_then(Json::as_u64)
-        .map(|v| v as usize)
-        .or_else(|| {
-            params
-                .get("sheetName")
-                .and_then(Json::as_str)
-                .and_then(|n| wb.sheets.iter().position(|sh| sh.name.eq_ignore_ascii_case(n)))
-        })
-        .unwrap_or_else(|| wb.active_sheet());
-    let sh = wb
-        .sheet(si)
-        .ok_or_else(|| format!("Sheet index {si} out of range"))?;
-    let used_opt = sh.used_range();
-    let default_end_r = used_opt.map_or(0, |u| u.end.row);
-    let default_end_c = used_opt.map_or(0, |u| u.end.col);
-    let r1 = params.get("startRow").and_then(Json::as_u64).unwrap_or(0) as u32;
-    let c1 = params.get("startCol").and_then(Json::as_u64).unwrap_or(0) as u32;
-    let r2 = params
-        .get("endRow")
-        .and_then(Json::as_u64)
-        .map_or(default_end_r, |v| v as u32);
-    let c2 = params
-        .get("endCol")
-        .and_then(Json::as_u64)
-        .map_or(default_end_c, |v| v as u32);
-
-    let mut coords: BTreeSet<CellRef> = BTreeSet::new();
-    if r2 >= r1 && c2 >= c1 {
-        let range = RangeRef::new(CellRef::new(r1, c1), CellRef::new(r2, c2));
-        for (cref, _) in sh.cells.iter_range(range) {
-            coords.insert(cref);
-        }
-        for &cref in sh.spill.keys() {
-            if range.contains(cref) {
-                coords.insert(cref);
-            }
-        }
-    }
-    let mut entries = Vec::with_capacity(coords.len());
-    for cref in coords {
-        let disp = gridcraft_engine::display::cell_text(wb, sh, cref);
-        let num = match sh.value(cref) {
-            Value::Number(n) if n.is_finite() => Some(n),
-            _ => None,
-        };
-        if !disp.is_empty() || num.is_some() {
-            entries.push(json!({
-                "r": cref.row,
-                "c": cref.col,
-                "t": disp,
-                "n": num,
-            }));
-        }
-    }
-    Ok(json!({
-        "sheetIndex": si,
-        "sheetName": sh.name,
-        "usedEndRow": default_end_r,
-        "usedEndCol": default_end_c,
-        "cells": entries,
-    }))
-}
-
-fn map_sub_type_to_chart_kind(sub_type: &str) -> (ChartKind, bool) {
-    let lower = sub_type.trim().to_ascii_lowercase();
-    match lower.as_str() {
-        "column_stacked" | "column_3d_stacked" => (ChartKind::ColumnStacked, false),
-        "column_100" | "column_3d_100" => (ChartKind::ColumnStacked100, false),
-        "bar" | "bar_3d" => (ChartKind::BarClustered, false),
-        "bar_stacked" | "bar_3d_stacked" => (ChartKind::BarStacked, false),
-        "bar_100" | "bar_3d_100" => (ChartKind::BarStacked100, false),
-        "line" | "line_3d" => (ChartKind::Line, false),
-        "line_smooth" => (ChartKind::LineMarkers, true),
-        "line_markers" => (ChartKind::LineMarkers, false),
-        "line_stacked" | "line_100" | "line_markers_stacked" | "line_markers_100" => {
-            (ChartKind::LineStacked, false)
-        }
-        "pie" | "pie_3d" | "pie_exploded" => (ChartKind::Pie, false),
-        "donut" | "doughnut" => (ChartKind::Doughnut, false),
-        "area" | "area_3d" => (ChartKind::Area, false),
-        "area_stacked" | "area_3d_stacked" => (ChartKind::AreaStacked, false),
-        "area_100" | "area_3d_100" => (ChartKind::AreaStacked100, false),
-        "scatter" => (ChartKind::Scatter, false),
-        "scatter_smooth" | "scatter_smooth_no_markers" => (ChartKind::ScatterLines, true),
-        "scatter_lines" | "scatter_lines_no_markers" => (ChartKind::ScatterLines, false),
-        "bubble" | "bubble_3d" => (ChartKind::Bubble, false),
-        "radar" | "radar_markers" | "radar_filled" => (ChartKind::Radar, false),
-        "histogram" | "pareto" => (ChartKind::Histogram, false),
-        "waterfall" => (ChartKind::Waterfall, false),
-        "funnel" => (ChartKind::Funnel, false),
-        "treemap" => (ChartKind::Treemap, false),
-        "sunburst" => (ChartKind::Sunburst, false),
-        "boxwhisker" | "box_whisker" => (ChartKind::BoxWhisker, false),
-        "stock" => (ChartKind::Stock, false),
-        "combo" | "combo_secondary" => (ChartKind::Combo, false),
-        _ => (ChartKind::ColumnClustered, false),
-    }
-}
-
-fn map_chart_kind_to_sub_type(kind: ChartKind, smooth: bool) -> &'static str {
-    match kind {
-        ChartKind::ColumnClustered => "column",
-        ChartKind::ColumnStacked => "column_stacked",
-        ChartKind::ColumnStacked100 => "column_100",
-        ChartKind::BarClustered => "bar",
-        ChartKind::BarStacked => "bar_stacked",
-        ChartKind::BarStacked100 => "bar_100",
-        ChartKind::Line => "line",
-        ChartKind::LineMarkers => {
-            if smooth {
-                "line_smooth"
-            } else {
-                "line_markers"
-            }
-        }
-        ChartKind::LineStacked => "line_stacked",
-        ChartKind::Pie => "pie",
-        ChartKind::Doughnut => "donut",
-        ChartKind::Area => "area",
-        ChartKind::AreaStacked => "area_stacked",
-        ChartKind::AreaStacked100 => "area_100",
-        ChartKind::Scatter => "scatter",
-        ChartKind::ScatterLines => {
-            if smooth {
-                "scatter_smooth"
-            } else {
-                "scatter_lines"
-            }
-        }
-        ChartKind::Bubble => "bubble",
-        ChartKind::Radar => "radar",
-        ChartKind::Histogram => "histogram",
-        ChartKind::Waterfall => "waterfall",
-        ChartKind::Funnel => "funnel",
-        ChartKind::Treemap => "treemap",
-        ChartKind::Sunburst => "sunburst",
-        ChartKind::BoxWhisker => "box_whisker",
-        ChartKind::Stock => "stock",
-        ChartKind::Combo => "combo",
-    }
-}
-
-fn format_str_array_literal(items: &[String]) -> String {
-    let quoted: Vec<String> = items
-        .iter()
-        .map(|s| format!("\"{}\"", s.replace('"', "\"\"")))
-        .collect();
-    format!("{{{}}}", quoted.join(","))
-}
-
-fn format_num_array_literal(items: &[f64]) -> String {
-    let nums: Vec<String> = items
-        .iter()
-        .map(|v| {
-            if v.is_finite() {
-                format!("{v}")
-            } else {
-                "0".to_string()
-            }
-        })
-        .collect();
-    format!("{{{}}}", nums.join(","))
-}
-
-/// [EN] Synchronizes MasuSheet floating objects (`CHART`, `IMAGE`, `SHAPE`, `TEXT_BOX`) into the
-///      active Rust `Workbook` so `.xlsx` save and PDF export emit genuine ECMA-376 DrawingML/ChartML.
-/// [JA] MasuSheet 側のフローティングオブジェクト（グラフ・画像・図形・テキストボックス）を
-///      Rust ワークブックモデルへ同期し、Excel 互換の OOXML 描画・グラフ要素および PDF 出力に反映します。
-fn sync_workbook_objects_json(s: &mut Session, params: &Json) -> Result<Json, String> {
-    let doc = s.doc_mut().map_err(|e| e.to_string())?;
-    let wb = Arc::make_mut(&mut doc.wb);
-    for sh_arc in &mut wb.sheets {
-        let sh = Arc::make_mut(sh_arc);
-        sh.charts.clear();
-        sh.images.clear();
-        sh.shapes.clear();
-    }
-    let Some(arr) = params.get("objects").and_then(Json::as_array) else {
-        return Ok(json!({ "synced": 0 }));
-    };
-
-    let mut next_id: u32 = 1;
-    let mut synced_count: usize = 0;
-
-    for obj in arr {
-        let si = obj
-            .get("sheetIndex")
-            .and_then(Json::as_u64)
-            .unwrap_or(0) as usize;
-        if si >= wb.sheets.len() {
-            continue;
-        }
-        let sh = Arc::make_mut(&mut wb.sheets[si]);
-        let x_pt = obj
-            .get("xPt")
-            .and_then(Json::as_f64)
-            .unwrap_or(80.0)
-            .max(0.0);
-        let y_pt = obj
-            .get("yPt")
-            .and_then(Json::as_f64)
-            .unwrap_or(60.0)
-            .max(0.0);
-        let w_pt = obj
-            .get("widthPt")
-            .and_then(Json::as_f64)
-            .unwrap_or(180.0)
-            .max(16.0) as f32;
-        let h_pt = obj
-            .get("heightPt")
-            .and_then(Json::as_f64)
-            .unwrap_or(110.0)
-            .max(16.0) as f32;
-        let col = sh.col_at(x_pt);
-        let row = sh.row_at(y_pt);
-        let anchor = Anchor {
-            cell: CellRef::new(row, col),
-            dx: (x_pt - sh.col_left(col)).max(0.0) as f32,
-            dy: (y_pt - sh.row_top(row)).max(0.0) as f32,
-            width: w_pt,
-            height: h_pt,
-            mode: AnchorMode::MoveAndSize,
-        };
-
-        let kind_str = obj
-            .get("kind")
-            .and_then(Json::as_str)
-            .unwrap_or("SHAPE")
-            .trim();
-        let sub_type = obj
-            .get("subType")
-            .and_then(Json::as_str)
-            .unwrap_or("rectangle")
-            .trim();
-        let title_str = obj
-            .get("title")
-            .and_then(Json::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let text_str = obj
-            .get("text")
-            .and_then(Json::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let fill_raw = obj
-            .get("fillColor")
-            .and_then(Json::as_i64)
-            .map(|v| v as u32)
-            .unwrap_or(0);
-        let stroke_raw = obj
-            .get("strokeColor")
-            .and_then(Json::as_i64)
-            .map(|v| v as u32)
-            .unwrap_or(0);
-        let stroke_w = obj
-            .get("strokeWidthPt")
-            .and_then(Json::as_f64)
-            .unwrap_or(2.0);
-
-        match kind_str {
-            "CHART" => {
-                let (chart_kind, smooth_default) = map_sub_type_to_chart_kind(sub_type);
-                let top_labels: Vec<String> = obj
-                    .get("chartLabels")
-                    .and_then(Json::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(Json::as_str)
-                            .map(ToString::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let top_values: Vec<f64> = obj
-                    .get("chartValues")
-                    .and_then(Json::as_array)
-                    .map(|a| a.iter().filter_map(Json::as_f64).collect())
-                    .unwrap_or_default();
-
-                let mut series_vec: Vec<Series> = Vec::new();
-                if let Some(s_arr) = obj.get("chartSeries").and_then(Json::as_array) {
-                    for (idx, s_item) in s_arr.iter().enumerate() {
-                        let s_name = s_item
-                            .get("name")
-                            .and_then(Json::as_str)
-                            .unwrap_or("")
-                            .trim();
-                        let s_name_ref = s_item
-                            .get("nameCellRef")
-                            .and_then(Json::as_str)
-                            .unwrap_or("")
-                            .trim();
-                        let s_x_range = s_item
-                            .get("xRangeText")
-                            .and_then(Json::as_str)
-                            .unwrap_or("")
-                            .trim();
-                        let s_y_range = s_item
-                            .get("yRangeText")
-                            .and_then(Json::as_str)
-                            .unwrap_or("")
-                            .trim();
-                        let s_x_labels: Vec<String> = s_item
-                            .get("xLabels")
-                            .and_then(Json::as_array)
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(Json::as_str)
-                                    .map(ToString::to_string)
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        let s_vals: Vec<f64> = s_item
-                            .get("values")
-                            .and_then(Json::as_array)
-                            .map(|a| a.iter().filter_map(Json::as_f64).collect())
-                            .unwrap_or_default();
-                        let s_col_raw = s_item
-                            .get("color")
-                            .and_then(Json::as_i64)
-                            .map(|v| v as u32)
-                            .unwrap_or(0);
-
-                        let name_opt = if !s_name_ref.is_empty() {
-                            Some(s_name_ref.to_string())
-                        } else if !s_name.is_empty() {
-                            Some(s_name.to_string())
-                        } else {
-                            None
-                        };
-                        let cat_opt = if !s_x_range.is_empty() {
-                            Some(s_x_range.to_string())
-                        } else if !s_x_labels.is_empty() {
-                            Some(format_str_array_literal(&s_x_labels))
-                        } else if !top_labels.is_empty() {
-                            Some(format_str_array_literal(&top_labels))
-                        } else {
-                            None
-                        };
-                        let val_str = if !s_y_range.is_empty() {
-                            s_y_range.to_string()
-                        } else if !s_vals.is_empty() {
-                            format_num_array_literal(&s_vals)
-                        } else if !top_values.is_empty() {
-                            format_num_array_literal(&top_values)
-                        } else {
-                            "{0}".to_string()
-                        };
-
-                        series_vec.push(Series {
-                            name: name_opt,
-                            categories: cat_opt,
-                            values: val_str,
-                            bubble_sizes: None,
-                            color: (s_col_raw != 0).then(|| Color::Rgb(s_col_raw & 0x00FF_FFFF)),
-                            secondary: sub_type.eq_ignore_ascii_case("combo_secondary") && idx > 0,
-                            kind: (matches!(chart_kind, ChartKind::Combo) && idx > 0)
-                                .then_some(ChartKind::LineMarkers),
-                            smooth: smooth_default,
-                            quartiles: Default::default(),
-                            trendlines: Vec::new(),
-                        });
-                    }
-                }
-                if series_vec.is_empty() {
-                    let cat_opt = (!top_labels.is_empty()).then(|| format_str_array_literal(&top_labels));
-                    let val_str = if !top_values.is_empty() {
-                        format_num_array_literal(&top_values)
-                    } else {
-                        "{0}".to_string()
-                    };
-                    series_vec.push(Series {
-                        name: (!title_str.is_empty()).then(|| title_str.clone()),
-                        categories: cat_opt,
-                        values: val_str,
-                        bubble_sizes: None,
-                        color: (fill_raw != 0).then(|| Color::Rgb(fill_raw & 0x00FF_FFFF)),
-                        secondary: false,
-                        kind: None,
-                        smooth: smooth_default,
-                        quartiles: Default::default(),
-                        trendlines: Vec::new(),
-                    });
-                }
-
-                let src_opt = obj
-                    .get("sourceRangeText")
-                    .and_then(Json::as_str)
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .map(ToString::to_string);
-
-                sh.charts.push(Chart {
-                    id: next_id,
-                    kind: chart_kind,
-                    anchor,
-                    title: (!title_str.is_empty()).then_some(title_str),
-                    series: series_vec,
-                    legend: LegendPos::Bottom,
-                    data_labels: false,
-                    gridlines: true,
-                    style: 2,
-                    x_title: None,
-                    y_title: None,
-                    source: src_opt,
-                    by_rows: false,
-                    pivot: None,
-                });
-                next_id = next_id.saturating_add(1);
-                synced_count += 1;
-            }
-            "IMAGE" => {
-                if let Some(b64_str) = obj.get("imageBase64").and_then(Json::as_str)
-                    && !b64_str.trim().is_empty()
-                    && let Some(bytes) = gridcraft_model::b64::decode(b64_str.trim())
-                    && !bytes.is_empty()
-                {
-                    let mime = if bytes.starts_with(&[0xFF, 0xD8]) {
-                        "image/jpeg"
-                    } else {
-                        "image/png"
-                    };
-                    let alt_txt = if !title_str.is_empty() {
-                        title_str
-                    } else {
-                        text_str
-                    };
-                    sh.images.push(Image {
-                        id: next_id,
-                        anchor,
-                        data: Arc::new(bytes),
-                        mime: mime.to_string(),
-                        alt: alt_txt,
-                    });
-                    next_id = next_id.saturating_add(1);
-                    synced_count += 1;
-                }
-            }
-            _ => {
-                let shape_kind = if kind_str == "TEXT_BOX" || sub_type.eq_ignore_ascii_case("textbox") {
-                    ShapeKind::TextBox
-                } else {
-                    match sub_type.to_ascii_lowercase().as_str() {
-                        "roundrect" | "round_rect" | "rounded_rect" | "roundedrectangle" => {
-                            ShapeKind::RoundedRectangle
-                        }
-                        "oval" | "circle" | "ellipse" => ShapeKind::Ellipse,
-                        "triangle" | "diamond" => ShapeKind::Triangle,
-                        "arrow" | "arrow_left" | "arrow_up" | "arrow_down" | "right_arrow"
-                        | "left_arrow" => ShapeKind::Arrow,
-                        "line" => ShapeKind::Line,
-                        _ => ShapeKind::Rectangle,
-                    }
-                };
-                let fill = if fill_raw != 0 {
-                    Color::Rgb(fill_raw & 0x00FF_FFFF)
-                } else {
-                    Color::Auto
-                };
-                let line = if stroke_raw != 0 {
-                    Color::Rgb(stroke_raw & 0x00FF_FFFF)
-                } else {
-                    Color::Auto
-                };
-                let body = if !text_str.is_empty() {
-                    text_str
-                } else {
-                    title_str
-                };
-                sh.shapes.push(Shape {
-                    id: next_id,
-                    kind: shape_kind,
-                    anchor,
-                    fill,
-                    line,
-                    text: body,
-                    format: ShapeFormat {
-                        no_line: stroke_raw == 0 || stroke_w <= 0.0,
-                        ..Default::default()
-                    },
-                });
-                next_id = next_id.saturating_add(1);
-                synced_count += 1;
-            }
-        }
-    }
-
-    Ok(json!({ "synced": synced_count }))
-}
-
-fn eval_chart_expr_values(wb: &Workbook, sheet_index: usize, expr: &str) -> Vec<Value> {
-    let clean = expr.trim().trim_start_matches('=');
-    if clean.is_empty() {
-        return Vec::new();
-    }
-    match gridcraft_engine::calc::evaluate(wb, sheet_index, CellRef::new(0, 0), clean) {
-        Value::Array(arr) => arr.data.clone(),
-        Value::Empty => Vec::new(),
-        other => vec![other],
-    }
-}
-
-/// [EN] Reads standard ECMA-376 OOXML charts, images, and shapes from the active Rust `Workbook`
-///      so Excel-authored `.xlsx` files also display their charts/images/shapes on MasuSheet's canvas.
-/// [JA] 開いた `.xlsx` ワークブック内の標準 OOXML グラフ・画像・図形を読み取り、MasuSheet キャンバスへ復元します。
-fn read_workbook_objects_json(s: &Session) -> Result<Json, String> {
-    let doc = s.active().ok_or_else(|| "No active workbook".to_string())?;
-    let wb = &doc.wb;
-    let mut out: Vec<Json> = Vec::new();
-    let palette: [u32; 6] = [
-        0xFF25_63EB,
-        0xFF16_A34A,
-        0xFFEA_580C,
-        0xFF93_33EA,
-        0xFFDC_2626,
-        0xFF08_91B2,
-    ];
-
-    for (si, sh) in wb.sheets.iter().enumerate() {
-        for ch in &sh.charts {
-            let x_pt = sh.col_left(ch.anchor.cell.col) + ch.anchor.dx as f64;
-            let y_pt = sh.row_top(ch.anchor.cell.row) + ch.anchor.dy as f64;
-            let any_smooth = ch.series.iter().any(|se| se.smooth);
-            let sub_type = map_chart_kind_to_sub_type(ch.kind, any_smooth);
-
-            let mut series_json: Vec<Json> = Vec::new();
-            let mut primary_labels: Vec<String> = Vec::new();
-            let mut primary_values: Vec<f64> = Vec::new();
-
-            for (s_idx, se) in ch.series.iter().enumerate() {
-                let vals: Vec<f64> = eval_chart_expr_values(wb, si, &se.values)
-                    .iter()
-                    .map(|v| v.as_f64().unwrap_or(0.0))
-                    .collect();
-                let x_labels: Vec<String> = se
-                    .categories
-                    .as_deref()
-                    .map(|cat| {
-                        eval_chart_expr_values(wb, si, cat)
-                            .into_iter()
-                            .map(|v| v.display())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let (resolved_name, name_cell_ref) = match se.name.as_deref() {
-                    Some(raw_n) if !raw_n.trim().is_empty() => {
-                        let trimmed = raw_n.trim();
-                        let looks_like_ref = trimmed.contains('!')
-                            || trimmed.starts_with('$')
-                            || CellRef::parse(trimmed).is_some();
-                        if looks_like_ref {
-                            let disp = eval_chart_expr_values(wb, si, trimmed)
-                                .into_iter()
-                                .next()
-                                .map(|v| v.display())
-                                .filter(|d| !d.is_empty())
-                                .unwrap_or_else(|| format!("Series {}", s_idx + 1));
-                            (disp, trimmed.to_string())
-                        } else {
-                            (trimmed.to_string(), String::new())
-                        }
-                    }
-                    _ => (format!("Series {}", s_idx + 1), String::new()),
-                };
-
-                let s_color = se
-                    .color
-                    .as_ref()
-                    .map(|c| resolve_argb(c, wb))
-                    .filter(|&c| c != 0)
-                    .unwrap_or(palette[s_idx % palette.len()]);
-
-                let x_range_txt = se
-                    .categories
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty() && !t.starts_with('{'))
-                    .unwrap_or("")
-                    .to_string();
-                let y_range_txt = {
-                    let t = se.values.trim();
-                    if !t.is_empty() && !t.starts_with('{') {
-                        t.to_string()
-                    } else {
-                        String::new()
-                    }
-                };
-
-                if s_idx == 0 {
-                    primary_labels = x_labels.clone();
-                    primary_values = vals.clone();
-                }
-
-                series_json.push(json!({
-                    "name": resolved_name,
-                    "values": vals,
-                    "color": s_color as i32,
-                    "nameCellRef": name_cell_ref,
-                    "xRangeText": x_range_txt,
-                    "yRangeText": y_range_txt,
-                    "xLabels": x_labels,
-                }));
-            }
-
-            if primary_labels.is_empty() && !primary_values.is_empty() {
-                primary_labels = (1..=primary_values.len())
-                    .map(|i| i.to_string())
-                    .collect();
-            }
-
-            out.push(json!({
-                "id": format!("ooxml_chart_{}_{}", si, ch.id),
-                "sheetIndex": si,
-                "kind": "CHART",
-                "subType": sub_type,
-                "xPt": x_pt,
-                "yPt": y_pt,
-                "widthPt": ch.anchor.width.max(120.0),
-                "heightPt": ch.anchor.height.max(90.0),
-                "title": ch.title.clone().unwrap_or_default(),
-                "text": "",
-                "fillColor": 0xFFFF_FFFFu32 as i32,
-                "strokeColor": 0xFFCB_D5E1u32 as i32,
-                "strokeWidthPt": 1.5,
-                "sourceRangeText": ch.source.clone().unwrap_or_default(),
-                "chartLabels": primary_labels,
-                "chartValues": primary_values,
-                "chartSeries": series_json,
-            }));
-        }
-
-        for img in &sh.images {
-            if img.data.is_empty() {
-                continue;
-            }
-            let x_pt = sh.col_left(img.anchor.cell.col) + img.anchor.dx as f64;
-            let y_pt = sh.row_top(img.anchor.cell.row) + img.anchor.dy as f64;
-            out.push(json!({
-                "id": format!("ooxml_img_{}_{}", si, img.id),
-                "sheetIndex": si,
-                "kind": "IMAGE",
-                "subType": "image",
-                "xPt": x_pt,
-                "yPt": y_pt,
-                "widthPt": img.anchor.width.max(40.0),
-                "heightPt": img.anchor.height.max(40.0),
-                "title": img.alt,
-                "text": "",
-                "fillColor": 0,
-                "strokeColor": 0,
-                "strokeWidthPt": 0.0,
-                "imageBase64": gridcraft_model::b64::encode(&img.data),
-            }));
-        }
-
-        for sp in &sh.shapes {
-            let x_pt = sh.col_left(sp.anchor.cell.col) + sp.anchor.dx as f64;
-            let y_pt = sh.row_top(sp.anchor.cell.row) + sp.anchor.dy as f64;
-            let (kind_str, sub_str) = match sp.kind {
-                ShapeKind::TextBox => ("TEXT_BOX", "textbox"),
-                ShapeKind::RoundedRectangle => ("SHAPE", "roundRect"),
-                ShapeKind::Ellipse => ("SHAPE", "ellipse"),
-                ShapeKind::Triangle => ("SHAPE", "triangle"),
-                ShapeKind::Arrow => ("SHAPE", "arrow"),
-                ShapeKind::Line => ("SHAPE", "line"),
-                _ => ("SHAPE", "rectangle"),
-            };
-            let fill_argb = resolve_argb(&sp.fill, wb);
-            let stroke_argb = if sp.format.no_line {
-                0
-            } else {
-                let c = resolve_argb(&sp.line, wb);
-                if c != 0 { c } else { 0xFF16_3828 }
-            };
-            out.push(json!({
-                "id": format!("ooxml_shape_{}_{}", si, sp.id),
-                "sheetIndex": si,
-                "kind": kind_str,
-                "subType": sub_str,
-                "xPt": x_pt,
-                "yPt": y_pt,
-                "widthPt": sp.anchor.width.max(32.0),
-                "heightPt": sp.anchor.height.max(24.0),
-                "title": sp.text,
-                "text": sp.text,
-                "fillColor": fill_argb as i32,
-                "strokeColor": stroke_argb as i32,
-                "strokeWidthPt": if sp.format.no_line { 0.0 } else { 2.0 },
-            }));
-        }
-    }
-
-    Ok(json!({ "objects": out }))
-}
-
+/// [EN] Resets an existing session to a blank or named sample workbook and returns the JSON viewport.
+/// [JA] 指定セッションを空白ブックまたは名前付きサンプルで再初期化し、ビューポート JSON を返します。
 pub fn init_session(session_id: i64, sample: &str) -> String {
-    let arc = get_or_create_session(session_id);
+    let Some(arc) = get_or_create_session(session_id) else {
+        return serialize_error_viewport(session_id, "Invalid negative session ID");
+    };
     let mut s = arc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1477,7 +140,7 @@ pub fn init_session(session_id: i64, sample: &str) -> String {
     } else {
         s.execute("file.new", json!({"sample": clean})).map(|_| ())
     };
-    let err = match res {
+    let error = match res {
         Ok(()) => {
             for _ in 0..prev_count {
                 if s.documents().len() > 1 {
@@ -1488,21 +151,35 @@ pub fn init_session(session_id: i64, sample: &str) -> String {
         }
         Err(e) => Some(e.to_string()),
     };
-    let dto = build_viewport_dto(session_id, &s, 80, 30, err, None);
-    serde_json::to_string(&dto).unwrap_or_else(|_| "{\"ok\":false}".into())
+    let dto = build_viewport_dto(
+        &s,
+        ViewportRequest {
+            session_id,
+            max_row: 80,
+            max_col: 30,
+            error,
+            result: None,
+        },
+    );
+    serde_json::to_string(&dto).unwrap_or_else(|_| FALLBACK_ERROR_JSON.into())
 }
 
+/// [EN] Parses `.xlsx` / `.csv` / `.tsv` / `.ods` / `.html` bytes into `session_id`, preserving the
+///      previous document if parsing fails.
+/// [JA] バイト配列からワークブックを読み込みます。破損ファイル等で失敗した場合は開いていた既存ブックを維持します。
 pub fn open_workbook_bytes_session(session_id: i64, name: &str, raw_bytes: &[u8]) -> String {
+    let Some(arc) = get_or_create_session(session_id) else {
+        return serialize_error_viewport(session_id, "Invalid negative session ID");
+    };
     let safe_name = if name.trim().is_empty() {
         "Book1.xlsx"
     } else {
         name.trim()
     };
-    let arc = get_or_create_session(session_id);
     let mut s = arc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let err = match gridcraft_engine::io::open_bytes(safe_name, raw_bytes) {
+    let error = match gridcraft_engine::io::open_bytes(safe_name, raw_bytes) {
         Ok((wb, _warnings)) => {
             let prev_count = s.documents().len();
             let doc = DocState::from_saved(wb, None, safe_name.to_string(), Trust::FromFile);
@@ -1517,11 +194,24 @@ pub fn open_workbook_bytes_session(session_id: i64, name: &str, raw_bytes: &[u8]
         }
         Err(e) => Some(e.to_string()),
     };
-    let dto = build_viewport_dto(session_id, &s, 120, 45, err, None);
-    serde_json::to_string(&dto).unwrap_or_else(|_| "{\"ok\":false}".into())
+    let dto = build_viewport_dto(
+        &s,
+        ViewportRequest {
+            session_id,
+            max_row: 120,
+            max_col: 45,
+            error,
+            result: None,
+        },
+    );
+    serde_json::to_string(&dto).unwrap_or_else(|_| FALLBACK_ERROR_JSON.into())
 }
 
+/// [EN] Serializes the active workbook of `session_id` to `.xlsx` / `.csv` / `.tsv` / `.ods` / `.html`
+///      bytes and marks lossless saves (`Xlsx` / `Json`) clean (`isDirty = false`).
+/// [JA] セッション内のワークブックを指定拡張子のバイト列へシリアライズし、`.xlsx` 等の完全保存時は未保存フラグを解除します。
 pub fn save_workbook_bytes_session(session_id: i64, name: &str) -> Option<Vec<u8>> {
+    let arc = get_or_create_session(session_id)?;
     let clean = if name.trim().is_empty() {
         "Book1.xlsx"
     } else {
@@ -1533,7 +223,6 @@ pub fn save_workbook_bytes_session(session_id: i64, name: &str) -> Option<Vec<u8
         format!("{clean}.xlsx")
     };
     let kind = gridcraft_engine::io::FileKind::from_path(&safe_name);
-    let arc = get_or_create_session(session_id);
     let mut s = arc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1548,8 +237,10 @@ pub fn save_workbook_bytes_session(session_id: i64, name: &str) -> Option<Vec<u8
     Some(bytes)
 }
 
+/// [EN] Renders the active workbook of `session_id` to vector PDF bytes (`%PDF-...`).
+/// [JA] セッション内のワークブックを印刷レイアウト付きベクター PDF バイト列へ出力します。
 pub fn export_pdf_bytes_session(session_id: i64) -> Option<Vec<u8>> {
-    let arc = get_or_create_session(session_id);
+    let arc = get_or_create_session(session_id)?;
     let s = arc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1557,15 +248,17 @@ pub fn export_pdf_bytes_session(session_id: i64) -> Option<Vec<u8>> {
     let opts = PrintOptions::default();
     let lays = layouts(&doc.wb, &opts);
     let (pdf_bytes, _) = render_pdf(&doc.wb, &lays, &doc.display_title(), "");
-    if pdf_bytes.is_empty() {
-        None
-    } else {
-        Some(pdf_bytes)
-    }
+    (!pdf_bytes.is_empty()).then_some(pdf_bytes)
 }
 
+/// [EN] Executes a command ID (`cell.set`, `edit.undo`, `jni.readSheetCells`,
+///      `jni.syncWorkbookObjects`, `jni.readWorkbookObjects`, etc.) on `session_id` and returns
+///      the updated JSON viewport snapshot.
+/// [JA] 指定セッションに対してエンジンコマンドまたは JNI 専用ブリッジコマンドを実行し、更新後のビューポート JSON を返します。
 pub fn execute_command_session(session_id: i64, cmd: &str, params_str: &str) -> String {
-    let arc = get_or_create_session(session_id);
+    let Some(arc) = get_or_create_session(session_id) else {
+        return serialize_error_viewport(session_id, "Invalid negative session ID");
+    };
     let mut s = arc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1577,31 +270,54 @@ pub fn execute_command_session(session_id: i64, cmd: &str, params_str: &str) -> 
             Ok(v) => v,
             Err(e) => {
                 let dto = build_viewport_dto(
-                    session_id,
                     &s,
-                    120,
-                    45,
-                    Some(format!("Invalid JSON parameters for `{cmd}`: {e}")),
-                    None,
+                    ViewportRequest {
+                        session_id,
+                        max_row: 120,
+                        max_col: 45,
+                        error: Some(format!("Invalid JSON parameters for `{cmd}`: {e}")),
+                        result: None,
+                    },
                 );
-                return serde_json::to_string(&dto).unwrap_or_else(|_| "{\"ok\":false}".into());
+                return serde_json::to_string(&dto).unwrap_or_else(|_| FALLBACK_ERROR_JSON.into());
             }
         }
     };
 
-    let (err, res_json) = match cmd {
+    let (error, result) = dispatch_session_command(&mut s, cmd, params);
+    let dto = build_viewport_dto(
+        &s,
+        ViewportRequest {
+            session_id,
+            max_row: 120,
+            max_col: 45,
+            error,
+            result,
+        },
+    );
+    serde_json::to_string(&dto).unwrap_or_else(|_| FALLBACK_ERROR_JSON.into())
+}
+
+/// [EN] Routes a parsed command to UI no-ops, JNI helper handlers, or [`Session::execute`].
+/// [JA] 解析済みコマンドを UI 側処理対象・JNI ブリッジ専用ハンドラ・標準エンジンコマンドへ振り分けます。
+fn dispatch_session_command(
+    s: &mut Session,
+    cmd: &str,
+    params: Json,
+) -> (Option<String>, Option<Json>) {
+    match cmd {
         "app.language.japanese" | "app.language.english" | "view.theme" | "view.interfaceScale" => {
             (None, None)
         }
-        "jni.readSheetCells" => match read_sheet_cells_json(&s, &params) {
+        "jni.readSheetCells" => match read_sheet_cells_json(s, &params) {
             Ok(v) => (None, Some(v)),
             Err(e) => (Some(e), None),
         },
-        "jni.syncWorkbookObjects" => match sync_workbook_objects_json(&mut s, &params) {
+        "jni.syncWorkbookObjects" => match sync_workbook_objects_json(s, &params) {
             Ok(v) => (None, Some(v)),
             Err(e) => (Some(e), None),
         },
-        "jni.readWorkbookObjects" => match read_workbook_objects_json(&s) {
+        "jni.readWorkbookObjects" => match read_workbook_objects_json(s) {
             Ok(v) => (None, Some(v)),
             Err(e) => (Some(e), None),
         },
@@ -1624,27 +340,40 @@ pub fn execute_command_session(session_id: i64, cmd: &str, params_str: &str) -> 
             Ok(_) => (None, None),
             Err(e) => (Some(e.to_string()), None),
         },
-    };
-    let dto = build_viewport_dto(session_id, &s, 120, 45, err, res_json);
-    serde_json::to_string(&dto).unwrap_or_else(|_| "{\"ok\":false}".into())
+    }
 }
 
+/// [EN] Returns the current viewport JSON for `session_id` expanded up to `(max_row, max_col)`.
+/// [JA] 指定セッションのビューポート JSON を `(max_row, max_col)` の要求サイズに合わせて返します。
 pub fn get_viewport_json_session(session_id: i64, max_row: i32, max_col: i32) -> String {
-    let arc = get_or_create_session(session_id);
+    let Some(arc) = get_or_create_session(session_id) else {
+        return serialize_error_viewport(session_id, "Invalid negative session ID");
+    };
     let s = arc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dto = build_viewport_dto(
-        session_id,
         &s,
-        max_row.max(60) as u32,
-        max_col.max(26) as u32,
-        None,
-        None,
+        ViewportRequest {
+            session_id,
+            max_row: max_row.max(60) as u32,
+            max_col: max_col.max(26) as u32,
+            error: None,
+            result: None,
+        },
     );
-    serde_json::to_string(&dto).unwrap_or_else(|_| "{\"ok\":false}".into())
+    serde_json::to_string(&dto).unwrap_or_else(|_| FALLBACK_ERROR_JSON.into())
 }
 
+/// [EN] Serializes an [`empty_viewport_dto`] carrying `msg` as its structured error.
+/// [JA] エラーメッセージ付きの空 [`ViewportDto`] を JSON 文字列へシリアライズします。
+fn serialize_error_viewport(session_id: i64, msg: impl Into<String>) -> String {
+    serde_json::to_string(&empty_viewport_dto(session_id, Some(msg.into()), None))
+        .unwrap_or_else(|_| FALLBACK_ERROR_JSON.into())
+}
+
+/// [EN] Safely decodes a Java `String` into a Rust `String`, clearing any pending JVM exception.
+/// [JA] Java の `JString` を安全に Rust `String` へ変換し、JVM 例外が発生した場合はクリアします。
 fn read_jstring_safe(env: &mut JNIEnv, input: &JString) -> Result<String, String> {
     if input.is_null() {
         return Ok(String::new());
@@ -1660,11 +389,21 @@ fn read_jstring_safe(env: &mut JNIEnv, input: &JString) -> Result<String, String
     }
 }
 
+/// [EN] Allocates a Java `String` for `payload`; if the JVM rejects a huge string allocation,
+///      clears the pending exception and falls back to [`FALLBACK_ERROR_JSON`] before returning null.
+/// [JA] `payload` から Java 文字列を生成します。メモリ不足等で失敗した場合は JVM 例外を消去したうえで
+///      最小エラー JSON 文字列へのフォールバックを試みます。
 fn emit_jstring(env: &mut JNIEnv, payload: &str) -> jstring {
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_clear();
     }
-    match env.new_string(payload) {
+    if let Ok(s) = env.new_string(payload) {
+        return s.into_raw();
+    }
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    match env.new_string(FALLBACK_ERROR_JSON) {
         Ok(s) => s.into_raw(),
         Err(_) => {
             if env.exception_check().unwrap_or(false) {
@@ -1675,6 +414,8 @@ fn emit_jstring(env: &mut JNIEnv, payload: &str) -> jstring {
     }
 }
 
+/// [EN] Panic-safe JNI wrapper for functions returning JSON `jstring`.
+/// [JA] JSON 文字列（`jstring`）を返す JNI エントリポイント共通の `catch_unwind` 保護ラッパーです。
 fn jni_string_guard<F>(mut env: JNIEnv, f: F) -> jstring
 where
     F: FnOnce(&mut JNIEnv) -> String,
@@ -1686,6 +427,8 @@ where
     emit_jstring(&mut env, &out)
 }
 
+/// [EN] Panic-safe JNI wrapper for functions returning binary `jbyteArray` (`.xlsx` / `.pdf`).
+/// [JA] バイナリ配列（`jbyteArray`）を返す JNI エントリポイント共通の `catch_unwind` 保護ラッパーです。
 fn jni_bytes_guard<F>(mut env: JNIEnv, f: F) -> jbyteArray
 where
     F: FnOnce(&mut JNIEnv) -> Option<Vec<u8>>,
@@ -1709,33 +452,50 @@ where
 }
 
 // ============================================================================
-// MasuSheet clean JNI entry points (`com.masusheet.app.bridge.MasuSheetNativeBridge`)
+// MasuSheet JNI Export Symbols (`com.masusheet.app.bridge.MasuSheetNativeBridge`)
+// `#[allow(unsafe_code)]` is scoped strictly to these 8 FFI symbol declarations.
 // ============================================================================
 
+/// [EN] JNI export for `MasuSheetNativeBridge.nativeCreateSession(sample)`. Returns `-1` on panic.
+/// [JA] 新規ネイティブセッションを生成する JNI エントリポイントです（異常時は `0` と衝突しない `-1` を返却）。
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativeCreateSession(
     mut env: JNIEnv,
     _class: JClass,
     sample: JString,
 ) -> jlong {
-    catch_unwind(AssertUnwindSafe(|| {
+    let id = catch_unwind(AssertUnwindSafe(|| {
         let s = read_jstring_safe(&mut env, &sample).unwrap_or_default();
         create_session_handle(&s)
     }))
-    .unwrap_or(0)
+    .unwrap_or(-1);
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    id
 }
 
+/// [EN] JNI export for `MasuSheetNativeBridge.nativeCloseSession(sessionId)`.
+/// [JA] ネイティブセッションを解放する JNI エントリポイントです。
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativeCloseSession(
-    _env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     session_id: jlong,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         close_session_handle(session_id);
     }));
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
 }
 
+/// [EN] JNI export for `MasuSheetNativeBridge.nativeInitSession(sessionId, sample)`.
+/// [JA] 指定セッションをサンプルまたは空白ブックで初期化する JNI エントリポイントです。
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativeInitSession(
     env: JNIEnv,
@@ -1745,11 +505,13 @@ pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativ
 ) -> jstring {
     jni_string_guard(env, |env| match read_jstring_safe(env, &sample) {
         Ok(s) => init_session(session_id, &s),
-        Err(e) => serde_json::to_string(&empty_viewport_dto(session_id, Some(e), None))
-            .unwrap_or_else(|_| "{\"ok\":false}".into()),
+        Err(e) => serialize_error_viewport(session_id, e),
     })
 }
 
+/// [EN] JNI export for `MasuSheetNativeBridge.nativeOpenWorkbookBytesSession(sessionId, fileName, bytes)`.
+/// [JA] バイト配列からワークブックを開く JNI エントリポイントです。
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativeOpenWorkbookBytesSession(
     env: JNIEnv,
@@ -1761,18 +523,10 @@ pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativ
     jni_string_guard(env, |env| {
         let name = match read_jstring_safe(env, &file_name) {
             Ok(n) => n,
-            Err(e) => {
-                return serde_json::to_string(&empty_viewport_dto(session_id, Some(e), None))
-                    .unwrap_or_else(|_| "{\"ok\":false}".into());
-            }
+            Err(e) => return serialize_error_viewport(session_id, e),
         };
         if bytes.is_null() {
-            return serde_json::to_string(&empty_viewport_dto(
-                session_id,
-                Some("Workbook byte array is null".into()),
-                None,
-            ))
-            .unwrap_or_else(|_| "{\"ok\":false}".into());
+            return serialize_error_viewport(session_id, "Workbook byte array is null");
         }
         match env.convert_byte_array(&bytes) {
             Ok(raw) => open_workbook_bytes_session(session_id, &name, &raw),
@@ -1780,17 +534,15 @@ pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativ
                 if env.exception_check().unwrap_or(false) {
                     let _ = env.exception_clear();
                 }
-                serde_json::to_string(&empty_viewport_dto(
-                    session_id,
-                    Some(format!("Failed to read byte array: {e}")),
-                    None,
-                ))
-                .unwrap_or_else(|_| "{\"ok\":false}".into())
+                serialize_error_viewport(session_id, format!("Failed to read byte array: {e}"))
             }
         }
     })
 }
 
+/// [EN] JNI export for `MasuSheetNativeBridge.nativeSaveWorkbookBytesSession(sessionId, fileName)`.
+/// [JA] ワークブックを指定形式のバイト配列へ保存する JNI エントリポイントです。
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativeSaveWorkbookBytesSession(
     env: JNIEnv,
@@ -1804,6 +556,9 @@ pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativ
     })
 }
 
+/// [EN] JNI export for `MasuSheetNativeBridge.nativeExportPdfBytesSession(sessionId)`.
+/// [JA] ワークブックを PDF バイト配列へ出力する JNI エントリポイントです。
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativeExportPdfBytesSession(
     env: JNIEnv,
@@ -1813,6 +568,9 @@ pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativ
     jni_bytes_guard(env, |_| export_pdf_bytes_session(session_id))
 }
 
+/// [EN] JNI export for `MasuSheetNativeBridge.nativeExecuteCommandSession(sessionId, commandId, paramsJson)`.
+/// [JA] 指定セッションでコマンドを実行し最新ビューポート JSON を返す JNI エントリポイントです。
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativeExecuteCommandSession(
     env: JNIEnv,
@@ -1824,22 +582,19 @@ pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativ
     jni_string_guard(env, |env| {
         let cmd = match read_jstring_safe(env, &command_id) {
             Ok(c) => c,
-            Err(e) => {
-                return serde_json::to_string(&empty_viewport_dto(session_id, Some(e), None))
-                    .unwrap_or_else(|_| "{\"ok\":false}".into());
-            }
+            Err(e) => return serialize_error_viewport(session_id, e),
         };
         let params_str = match read_jstring_safe(env, &params_json) {
             Ok(p) => p,
-            Err(e) => {
-                return serde_json::to_string(&empty_viewport_dto(session_id, Some(e), None))
-                    .unwrap_or_else(|_| "{\"ok\":false}".into());
-            }
+            Err(e) => return serialize_error_viewport(session_id, e),
         };
         execute_command_session(session_id, &cmd, &params_str)
     })
 }
 
+/// [EN] JNI export for `MasuSheetNativeBridge.nativeGetViewportJsonSession(sessionId, maxRow, maxCol)`.
+/// [JA] 指定セッションのビューポート JSON を取得する JNI エントリポイントです。
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativeGetViewportJsonSession(
     env: JNIEnv,
@@ -1848,10 +603,13 @@ pub extern "system" fn Java_com_masusheet_app_bridge_MasuSheetNativeBridge_nativ
     max_row: jint,
     max_col: jint,
 ) -> jstring {
-    jni_string_guard(env, |_| get_viewport_json_session(session_id, max_row, max_col))
+    jni_string_guard(env, |_| {
+        get_viewport_json_session(session_id, max_row, max_col)
+    })
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -1870,6 +628,10 @@ mod tests {
         let v2: Json = serde_json::from_str(&get_viewport_json_session(s2, 60, 26)).unwrap();
         assert_eq!(v1["activeDisplayText"], "Session1");
         assert_eq!(v2["activeDisplayText"], "Session2");
+
+        // Negative session IDs are rejected without creating map entries
+        let neg: Json = serde_json::from_str(&get_viewport_json_session(-5, 60, 26)).unwrap();
+        assert_eq!(neg["ok"], false);
 
         close_session_handle(s1);
         close_session_handle(s2);
@@ -1893,6 +655,50 @@ mod tests {
         assert_eq!(parsed_read["ok"], true);
         let cells = parsed_read["result"]["cells"].as_array().unwrap();
         assert!(cells.iter().any(|c| c["t"] == "KeepMe"));
+
+        close_session_handle(sid);
+    }
+
+    #[test]
+    fn cross_sheet_read_sheet_cells_supports_kotlin_and_engine_params() {
+        let sid = create_session_handle("blank");
+        let _ = execute_command_session(sid, "cell.set", r#"{"cell":"A1","input":"Region"}"#);
+        let _ = execute_command_session(sid, "cell.set", r#"{"cell":"B1","input":"Amount"}"#);
+        let _ = execute_command_session(sid, "cell.set", r#"{"cell":"A2","input":"Tokyo"}"#);
+        let _ = execute_command_session(sid, "cell.set", r#"{"cell":"B2","input":"=100+250"}"#);
+        let _ = execute_command_session(sid, "home.bold", r#"{"range":"A1:B1","on":true}"#);
+
+        // Switch active sheet to a second sheet ("PivotSheet")
+        let _ = execute_command_session(sid, "home.insertSheet", r#"{"name":"PivotSheet"}"#);
+        let _ = execute_command_session(sid, "sheet.activate", r#"{"sheet":"PivotSheet"}"#);
+
+        // Read sheet 0 using Kotlin's exact parameter keys (`sheet`, `maxRows`, `maxCols`)
+        let raw = execute_command_session(
+            sid,
+            "jni.readSheetCells",
+            r#"{"sheet":0,"maxRows":500,"maxCols":50}"#,
+        );
+        let parsed: Json = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["ok"], true);
+        // Active sheet remains PivotSheet (index 1)
+        assert_eq!(parsed["sheetIndex"], 1);
+        // Result payload contains sheet 0's styled & formula-evaluated cells
+        assert_eq!(parsed["result"]["sheetIndex"], 0);
+        let cells = parsed["result"]["cells"].as_array().unwrap();
+        let b2 = cells
+            .iter()
+            .find(|c| c["r"] == 1 && c["c"] == 1)
+            .expect("B2 cell");
+        assert_eq!(b2["t"], "350");
+        assert_eq!(b2["e"], "=100+250");
+        assert_eq!(b2["n"], 350.0);
+
+        let a1 = cells
+            .iter()
+            .find(|c| c["r"] == 0 && c["c"] == 0)
+            .expect("A1 cell");
+        assert_eq!(a1["t"], "Region");
+        assert!((a1["fl"].as_u64().unwrap_or(0) & 1) == 1);
 
         close_session_handle(sid);
     }
@@ -1925,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_and_read_workbook_objects_persists_charts_images_shapes_to_xlsx() {
+    fn sync_and_read_workbook_objects_persists_and_guards_malformed_requests() {
         let sid = create_session_handle("blank");
         let _ = execute_command_session(sid, "cell.set", r#"{"cell":"A1","input":"Month"}"#);
         let _ = execute_command_session(sid, "cell.set", r#"{"cell":"B1","input":"Sales"}"#);
@@ -1979,12 +785,19 @@ mod tests {
             ]
         });
 
-        let sync_res = execute_command_session(sid, "jni.syncWorkbookObjects", &sync_payload.to_string());
+        let sync_res =
+            execute_command_session(sid, "jni.syncWorkbookObjects", &sync_payload.to_string());
         let parsed_sync: Json = serde_json::from_str(&sync_res).unwrap();
         assert_eq!(parsed_sync["ok"], true);
         assert_eq!(parsed_sync["result"]["synced"], 2);
 
-        let xlsx_bytes = save_workbook_bytes_session(sid, "ChartRoundtrip.xlsx").expect("xlsx bytes");
+        // Malformed sync without `objects` array MUST NOT wipe the 2 synced objects!
+        let bad_sync = execute_command_session(sid, "jni.syncWorkbookObjects", "{}");
+        let parsed_bad_sync: Json = serde_json::from_str(&bad_sync).unwrap();
+        assert_eq!(parsed_bad_sync["ok"], false);
+
+        let xlsx_bytes =
+            save_workbook_bytes_session(sid, "ChartRoundtrip.xlsx").expect("xlsx bytes");
         assert!(!xlsx_bytes.is_empty());
 
         let sid2 = create_session_handle("blank");
@@ -1997,8 +810,14 @@ mod tests {
         assert_eq!(parsed_objs["ok"], true);
         let objs = parsed_objs["result"]["objects"].as_array().unwrap();
         assert_eq!(objs.len(), 2);
-        assert!(objs.iter().any(|o| o["kind"] == "CHART" && o["title"] == "Sales Trend"));
-        assert!(objs.iter().any(|o| o["kind"] == "SHAPE" && o["subType"] == "roundRect" && o["text"] == "Note Box"));
+        assert!(
+            objs.iter()
+                .any(|o| o["kind"] == "CHART" && o["title"] == "Sales Trend")
+        );
+        assert!(
+            objs.iter()
+                .any(|o| o["kind"] == "SHAPE" && o["subType"] == "roundRect" && o["text"] == "Note Box")
+        );
 
         close_session_handle(sid);
         close_session_handle(sid2);

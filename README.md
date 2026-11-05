@@ -23,7 +23,7 @@
   - **10 Categories × 32 Chart Subtypes**: Column, Line, Pie/Doughnut, Bar, Area, XY Scatter, Stock, Radar, Combo, and Waterfall charts with on-sheet X/Y source range handles, per-element text color customization, finite-safe axis formatting, and full `.xlsx` save/reopen persistence (both native ECMA-376 OOXML charts and lossless MasuSheet metadata).
   - **Floating Images & Shapes**: Borderless clipboard/file image insertion with automatic `inSampleSize` downsampling & `LruCache` memory protection, 4-corner aspect-locked resize, mid-edge single-axis resize, `Shift+Click` multi-select alignment, `1pt` arrow-key nudge, and combined PNG export.
 - **PivotTables & Table AutoFilter**: Create PivotTables on new or existing worksheets with Row, Column, Value (11 aggregation modes), and Filter areas, subtotals/grand totals, style presets, and cross-sheet source refresh.
-- **Macro & VBA Studio**: Record actions into macros, edit and expand `For..Next` VBA loops, step through statements line-by-line in the debugger, and safely roll back macro runs via synchronized Undo snapshots.
+- **Macro Studio (VBA-Style Automation)**: Record actions into macros, edit and expand `For..Next` VBA-style loops, step through statements line-by-line in the debugger, and safely roll back macro runs via synchronized Undo snapshots.
 - **3-Mode AI Spreadsheet Assistant**:
   1. **Built-in Smart Script**: Offline deterministic table generation, totals, and formatting.
   2. **Web AI Bridge**: Copy structured sheet context + JSON schema to any browser AI and paste back the JSON plan.
@@ -76,9 +76,7 @@ MasuSheet/
 
 ### Run Rust Engine & JNI Tests
 ```bash
-cargo test -p gridcraft-core -p gridcraft-numfmt -p gridcraft-formula \
-  -p gridcraft-functions -p gridcraft-model -p gridcraft-calc \
-  -p gridcraft-xlsx -p gridcraft-chart -p gridcraft-engine -p masusheet-jni
+cargo test --workspace
 ```
 
 ### Run Android Unit Tests, Lint, & Debug APK Build
@@ -108,4 +106,6 @@ MasuSheet is dual-licensed under either of:
 
 at your option.
 
-MasuSheet's Rust calculation engine crates (`crates/*`) are derived from the open-source **GridCraft** spreadsheet engine by **ArtCraft**. MasuSheet is an independent open-source Android project and is not affiliated with or endorsed by ArtCraft. See [NOTICE](./NOTICE) and [ATTRIBUTION.md](./ATTRIBUTION.md) for full upstream copyright notices and attribution details.
+MasuSheet's Rust calculation engine crates (`crates/*`) are derived from the open-source **GridCraft** spreadsheet engine by **ArtCraft**. MasuSheet is an independent open-source Android project and is not affiliated with or endorsed by ArtCraft. Full open-source notices and third-party license texts are bundled inside the APK (`File` -> `About & OSS Licenses`) as well as in [NOTICE](./NOTICE) and [ATTRIBUTION.md](./ATTRIBUTION.md).
+
+> **Trademark Notice**: Microsoft, Excel, and Visual Basic are trademarks of Microsoft Corporation. Google, Android, and Google Sheets are trademarks of Google LLC. All other trademarks and product names are the property of their respective owners and are referenced solely to describe file-format (`.xlsx` / ECMA-376 OOXML) or syntax interoperability. MasuSheet is not affiliated with, sponsored by, or endorsed by Microsoft Corporation or Google LLC.

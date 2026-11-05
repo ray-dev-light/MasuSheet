@@ -68,9 +68,9 @@ class MasuSheetClipboardImageProvider : ContentProvider() {
         val dir = File(ctx.filesDir, DIR_NAME)
         if (!dir.isDirectory) return null
         val segments = uri.pathSegments
+        // [EN] Require an explicit `clipboard_<pid>_<uuid>.png` capability segment; never fall back to the latest file.
+        // [JA] URI パス内に明示的な `clipboard_<pid>_<uuid>.png` トークンがある場合のみ解決し、最新ファイルへのフォールバックを禁止します。
         val tokenSegment = segments.firstOrNull { it.startsWith("clipboard_") && it.endsWith(".png") }
-            ?: dir.listFiles()?.filter { it.isFile && it.name.endsWith(".png") }
-                ?.maxByOrNull { it.lastModified() }?.name
             ?: return null
         if ('/' in tokenSegment || '\\' in tokenSegment || ".." in tokenSegment) return null
         val baseCanonical = runCatching { dir.canonicalFile }.getOrNull() ?: return null

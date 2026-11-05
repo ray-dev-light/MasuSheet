@@ -1,23 +1,17 @@
-package com.masusheet.app
+package com.masusheet.app.model
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import com.masusheet.app.MainActivity
+import com.masusheet.app.SecondaryWorkbookActivity
+import com.masusheet.app.ai.AiChatMessage
+import com.masusheet.app.ai.AiPlanSession
+import com.masusheet.app.ai.MacroDefinition
+import com.masusheet.app.ai.MacroStep
+import com.masusheet.app.ai.MacroStudioEngine
+import com.masusheet.app.ai.VbaDebugState
+import com.masusheet.app.core.MasuSheetConfig
+import java.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
-import java.util.Base64
-import kotlin.math.roundToInt
 
 /**
  * ============================================================================
@@ -34,6 +28,7 @@ import kotlin.math.roundToInt
  * [EN] Full state of an open workbook tab, isolating engine session ID, overlays, objects, pivots, and Undo/Redo history.
  * [JA] 開いている1ブックタブの完全な状態（エンジンセッションID・カスタム書式・オブジェクト・ピボット・保存先URI等）を保持します。
  */
+@androidx.compose.runtime.Immutable
 data class OpenWorkbookSession(
     val id: String,
     val title: String,
@@ -56,6 +51,51 @@ data class OpenWorkbookSession(
 ) {
     val viewport: NativeViewportSnapshot
         get() = viewportSnapshot
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is OpenWorkbookSession) return false
+        return id == other.id &&
+            title == other.title &&
+            sampleKind == other.sampleKind &&
+            nativeSessionId == other.nativeSessionId &&
+            sourceUri == other.sourceUri &&
+            (savedWorkbookBytes contentEquals other.savedWorkbookBytes) &&
+            activeSheetIndex == other.activeSheetIndex &&
+            sheetObjects == other.sheetObjects &&
+            customColWidths == other.customColWidths &&
+            customRowHeights == other.customRowHeights &&
+            customWrapCells == other.customWrapCells &&
+            customCellStyles == other.customCellStyles &&
+            customSheetMerges == other.customSheetMerges &&
+            sheetTabColors == other.sheetTabColors &&
+            cellComments == other.cellComments &&
+            cellHyperlinks == other.cellHyperlinks &&
+            pivotTables == other.pivotTables &&
+            viewportSnapshot == other.viewportSnapshot
+    }
+
+    override fun hashCode(): Int {
+        var result = id.hashCode()
+        result = 31 * result + title.hashCode()
+        result = 31 * result + sampleKind.hashCode()
+        result = 31 * result + nativeSessionId.hashCode()
+        result = 31 * result + sourceUri.hashCode()
+        result = 31 * result + (savedWorkbookBytes?.contentHashCode() ?: 0)
+        result = 31 * result + activeSheetIndex
+        result = 31 * result + sheetObjects.hashCode()
+        result = 31 * result + customColWidths.hashCode()
+        result = 31 * result + customRowHeights.hashCode()
+        result = 31 * result + customWrapCells.hashCode()
+        result = 31 * result + customCellStyles.hashCode()
+        result = 31 * result + customSheetMerges.hashCode()
+        result = 31 * result + sheetTabColors.hashCode()
+        result = 31 * result + cellComments.hashCode()
+        result = 31 * result + cellHyperlinks.hashCode()
+        result = 31 * result + pivotTables.hashCode()
+        result = 31 * result + viewportSnapshot.hashCode()
+        return result
+    }
 }
 
 /**
@@ -255,6 +295,9 @@ object WorkbookHandoffSerializer {
         return root.toString()
     }
 
+    private const val MAX_HANDOFF_OBJECTS = 500
+    private const val MAX_HANDOFF_ARRAY_ITEMS = 50_000
+
     fun decodeOverlayMetadataJson(rawJson: String, workbookBytes: ByteArray? = null): OpenWorkbookSession? {
         if (rawJson.isBlank()) return null
         return runCatching {
@@ -267,7 +310,7 @@ object WorkbookHandoffSerializer {
             val sheetObjects = mutableListOf<NativeSheetObject>()
             val objsArr = root.optJSONArray("sheetObjects")
             if (objsArr != null) {
-                for (i in 0 until objsArr.length()) {
+                for (i in 0 until minOf(objsArr.length(), MAX_HANDOFF_OBJECTS)) {
                     val o = objsArr.optJSONObject(i) ?: continue
                     val kind = runCatching { SheetObjectKind.valueOf(o.optString("kind", "SHAPE")) }
                         .getOrDefault(SheetObjectKind.SHAPE)
@@ -347,7 +390,7 @@ object WorkbookHandoffSerializer {
 
             val cwMap = mutableMapOf<Pair<Int, Int>, Float>()
             root.optJSONArray("customColWidths")?.let { arr ->
-                for (i in 0 until arr.length()) {
+                for (i in 0 until minOf(arr.length(), MAX_HANDOFF_ARRAY_ITEMS)) {
                     val o = arr.optJSONObject(i) ?: continue
                     cwMap[o.optInt("s", 0) to o.optInt("c", 0)] = o.optDouble("w", 72.0).toFloat()
                 }
@@ -355,7 +398,7 @@ object WorkbookHandoffSerializer {
 
             val rhMap = mutableMapOf<Pair<Int, Int>, Float>()
             root.optJSONArray("customRowHeights")?.let { arr ->
-                for (i in 0 until arr.length()) {
+                for (i in 0 until minOf(arr.length(), MAX_HANDOFF_ARRAY_ITEMS)) {
                     val o = arr.optJSONObject(i) ?: continue
                     rhMap[o.optInt("s", 0) to o.optInt("r", 0)] = o.optDouble("h", 22.0).toFloat()
                 }
@@ -363,7 +406,7 @@ object WorkbookHandoffSerializer {
 
             val wrapMap = mutableMapOf<Pair<Int, Long>, Boolean>()
             root.optJSONArray("customWrapCells")?.let { arr ->
-                for (i in 0 until arr.length()) {
+                for (i in 0 until minOf(arr.length(), MAX_HANDOFF_ARRAY_ITEMS)) {
                     val o = arr.optJSONObject(i) ?: continue
                     wrapMap[o.optInt("s", 0) to o.optLong("k", 0L)] = o.optBoolean("v", false)
                 }
@@ -371,7 +414,7 @@ object WorkbookHandoffSerializer {
 
             val styleMap = mutableMapOf<Pair<Int, Long>, CustomCellStyleOverride>()
             root.optJSONArray("customCellStyles")?.let { arr ->
-                for (i in 0 until arr.length()) {
+                for (i in 0 until minOf(arr.length(), MAX_HANDOFF_ARRAY_ITEMS)) {
                     val o = arr.optJSONObject(i) ?: continue
                     styleMap[o.optInt("s", 0) to o.optLong("k", 0L)] = CustomCellStyleOverride(
                         bgColor = o.optInt("bg", 0),
@@ -555,6 +598,7 @@ data class MasuSheetUiState(
     val isMaterial3Ui: Boolean = true,
     val zoomPercent: Int = 100,
     val isZoomDialogOpen: Boolean = false,
+    val isOpenSourceLicensesDialogOpen: Boolean = false,
     val activeSample: String = "sales",
     val activeRibbonTab: String = "home",
     val toolbarVisible: Boolean = true,

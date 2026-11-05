@@ -1,24 +1,12 @@
-package com.masusheet.app
+package com.masusheet.app.ai
 
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import kotlin.math.abs
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.core.SpreadsheetColorPalette
+import com.masusheet.app.model.NativeViewportSnapshot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import org.json.JSONObject
 
 /**
  * ============================================================================
@@ -212,8 +200,8 @@ object MacroStudioEngine {
     }
 
     /**
-     * Expands loops (`For ... Next`) and strips comments/`Sub`/`End Sub` into flat executable statements
-     * so both Full Run and 1-Step Debugger can step through every concrete operation deterministically.
+     * [EN] Expands `For ... Next` loops using 64-bit bounds and strips comments/`Sub`/`End Sub` into flat statements for deterministic full-run and 1-step debugging.
+     * [JA] `For ... Next` ループを64bit整数境界で安全に展開し、コメントや `Sub`/`End Sub` を除去した実行可能ステートメント列へ変換します。
      */
     fun expandVbaStatements(vbaCode: String): List<String> {
         val rawLines = vbaCode.lines()
@@ -233,9 +221,16 @@ object MacroStudioEngine {
                 .find(line)
             if (forMatch != null) {
                 val varName = forMatch.groupValues[1]
-                val startVal = forMatch.groupValues[2].toIntOrNull() ?: 1
-                val endVal = forMatch.groupValues[3].toIntOrNull() ?: startVal
-                val stepVal = forMatch.groupValues[4].toIntOrNull() ?: if (endVal >= startVal) 1 else -1
+                // [EN] Use Long arithmetic so extreme bounds (e.g. Int.MAX_VALUE or Step -2147483648) never overflow or throw.
+                // [JA] Int.MAX_VALUE 付近や Step -2147483648 (Int.MIN_VALUE) でもオーバーフローや例外が起きないよう Long 演算で安全に展開します。
+                val startVal = (forMatch.groupValues[2].toLongOrNull() ?: 1L).coerceIn(-1_000_000_000_000L, 1_000_000_000_000L)
+                val endVal = (forMatch.groupValues[3].toLongOrNull() ?: startVal).coerceIn(-1_000_000_000_000L, 1_000_000_000_000L)
+                val rawStep = if (forMatch.groupValues[4].isNotEmpty()) {
+                    forMatch.groupValues[4].toLongOrNull() ?: 0L
+                } else {
+                    if (endVal >= startVal) 1L else -1L
+                }
+                val stepVal = rawStep.coerceIn(-1_000_000_000_000L, 1_000_000_000_000L)
                 // Find matching Next
                 var depth = 1
                 var j = i + 1
@@ -250,14 +245,23 @@ object MacroStudioEngine {
                     bodyLines.add(inner)
                     j++
                 }
-                val rangeSeq = if (stepVal > 0) {
-                    (startVal..min(endVal, startVal + 200) step stepVal)
-                } else if (stepVal < 0) {
-                    (startVal downTo max(endVal, startVal - 200) step -stepVal)
-                } else {
-                    IntProgression.fromClosedRange(startVal, startVal, 1)
+                val iterValues = mutableListOf<Long>()
+                if (stepVal > 0L) {
+                    val cappedEnd = minOf(endVal, startVal + 200L)
+                    var curVal = startVal
+                    while (curVal <= cappedEnd && iterValues.size <= 200) {
+                        iterValues.add(curVal)
+                        curVal += stepVal
+                    }
+                } else if (stepVal < 0L) {
+                    val cappedEnd = maxOf(endVal, startVal - 200L)
+                    var curVal = startVal
+                    while (curVal >= cappedEnd && iterValues.size <= 200) {
+                        iterValues.add(curVal)
+                        curVal += stepVal
+                    }
                 }
-                for (iterVal in rangeSeq) {
+                for (iterVal in iterValues) {
                     if (expanded.size >= MAX_EXPANDED_VBA_STATEMENTS) break
                     expanded.add("$varName = $iterVal")
                     val subBody = bodyLines.joinToString("\n") { bLine ->
@@ -284,7 +288,7 @@ object MacroStudioEngine {
      *      into `"prefix1suffix"` while preserving empty string literals (`""`) and text inside quotes.
      * [JA] VBAのループ変数を置換します。空文字リテラル `""` や文字列内部を壊さずに `&` 連結を展開します。
      */
-    private fun substituteVbaLoopVariable(line: String, varName: String, iterVal: Int): String {
+    private fun substituteVbaLoopVariable(line: String, varName: String, iterVal: Long): String {
         val escapedVar = Regex.escape(varName)
         val iterStr = iterVal.toString()
         var work = line
@@ -313,8 +317,8 @@ object MacroStudioEngine {
     }
 
     /**
-     * Executes a single expanded VBA statement against the spreadsheet engine.
-     * Returns a human-readable execution log entry.
+     * [EN] Executes one expanded VBA statement (`Range`, `Cells`, `Columns`, `MsgBox`, or allowlisted `Application.Run`) against the active sheet and returns an execution log line.
+     * [JA] 展開済みのVBA 1ステートメント（`Range`・`Cells`・`Columns`・`MsgBox`・許可済み `Application.Run`）を実行し、コンソール用の実行ログ行を返します。
      */
     fun executeSingleVbaStatement(
         stmt: String,
@@ -482,10 +486,13 @@ object MacroStudioEngine {
             }
         }
 
-        // 7. Application.Run "commandId"
+        // 7. Application.Run "commandId" (restricted to safe worksheet commands; blocks file.*/app.*/jni.* & sheet deletion)
         val appRunMatch = Regex("""^Application\.Run\s+"([^"]+)"$""", RegexOption.IGNORE_CASE).find(clean)
         if (appRunMatch != null) {
-            val cmdId = appRunMatch.groupValues[1]
+            val cmdId = appRunMatch.groupValues[1].trim()
+            if (!SpreadsheetAiAgent.isAllowedAiCommand(cmdId)) {
+                return "ブロックされたコマンド: $cmdId"
+            }
             executeCmd(cmdId, "{}")
             return "コマンド実行: $cmdId"
         }
@@ -494,7 +501,8 @@ object MacroStudioEngine {
     }
 
     /**
-     * Converts a Japanese/English natural language instruction into ready-to-run Spreadsheet VBA code.
+     * [EN] Synthesizes a ready-to-run VBA `Sub ... End Sub` macro tailored to the user's Japanese/English prompt and current cell selection.
+     * [JA] 日本語または英語の自然言語指示と現在の選択範囲から、そのまま実行・編集できるVBAサブプロシージャを生成します。
      */
     fun generateVbaFromNaturalLanguage(prompt: String, vp: NativeViewportSnapshot): String {
         val p = prompt.trim()

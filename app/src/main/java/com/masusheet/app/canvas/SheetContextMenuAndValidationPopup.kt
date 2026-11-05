@@ -1,145 +1,76 @@
-package com.masusheet.app
+package com.masusheet.app.canvas
 
-import android.view.View.MeasureSpec
-import com.masusheet.app.bridge.MasuSheetNativeBridge
-import com.masusheet.app.storage.AndroidKeystoreSecretStore
-import com.masusheet.app.storage.InMemorySecretStore
-import com.masusheet.app.storage.MasuSheetClipboardImageProvider
-import com.masusheet.app.storage.SecretStore
-import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Build
-import android.os.Bundle
-import android.text.Editable
-import android.text.InputType
-import android.text.Spannable
-import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
 import android.util.TypedValue
-import android.view.GestureDetector
 import android.view.Gravity
-import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.PointerIcon
-import android.view.VelocityTracker
 import android.view.View
-import android.view.ViewConfiguration
+import android.view.View.MeasureSpec
 import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputConnectionWrapper
-import android.view.inputmethod.InputContentInfo
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.OverScroller
-import android.widget.ScrollView
 import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContract
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.input.pointer.pointerHoverIcon
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.core.content.ContextCompat
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import kotlin.math.PI
+import com.masusheet.app.core.InlineCheckboxHelper
+import com.masusheet.app.core.MasuSheetConfig
+import com.masusheet.app.core.SpreadsheetI18n
+import com.masusheet.app.model.NativeValidationModel
+import com.masusheet.app.model.SheetObjectKind
+import com.masusheet.app.ui.copyImageBytesToSystemClipboard
+import com.masusheet.app.ui.copyToSystemClipboard
+import com.masusheet.app.ui.readImageBytesFromSystemClipboard
+import com.masusheet.app.viewmodel.getChartSourceTableColumns
+import com.masusheet.app.viewmodel.onAddChartSeriesFromSheet
+import com.masusheet.app.viewmodel.onAlignSelectedSheetObjects
+import com.masusheet.app.viewmodel.onAutoFillRange
+import com.masusheet.app.viewmodel.onBindCurrentSelectionToChart
+import com.masusheet.app.viewmodel.onBindSelectionAsChartXAxis
+import com.masusheet.app.viewmodel.onBindSelectionAsChartYAxis
+import com.masusheet.app.viewmodel.onCopySelectedSheetObjectsAsCombinedImage
+import com.masusheet.app.viewmodel.onDeleteSelectedSheetObjects
+import com.masusheet.app.viewmodel.onDeleteSheetObject
+import com.masusheet.app.viewmodel.onHideSelectedColumns
+import com.masusheet.app.viewmodel.onHideSelectedRows
+import com.masusheet.app.viewmodel.onInsertChart
+import com.masusheet.app.viewmodel.onInsertImageBytes
+import com.masusheet.app.viewmodel.onInsertSparkline
+import com.masusheet.app.viewmodel.onOpenChartAxisFormatDialog
+import com.masusheet.app.viewmodel.onOpenChartSelectDataDialog
+import com.masusheet.app.viewmodel.onOpenPivotChartPicker
+import com.masusheet.app.viewmodel.onPasteScreenshotOrLatestImage
+import com.masusheet.app.viewmodel.onRefreshChartFromSourceRange
+import com.masusheet.app.viewmodel.onResetSelectedImageAspectRatio
+import com.masusheet.app.viewmodel.onResetSelectedObjectRotation
+import com.masusheet.app.viewmodel.onRotateSelectedObjectBy
+import com.masusheet.app.viewmodel.onSelectAllSheetObjectsOnCurrentSheet
+import com.masusheet.app.viewmodel.onSelectChartXAxisColumn
+import com.masusheet.app.viewmodel.onSelectSheetObject
+import com.masusheet.app.viewmodel.onSelectValidationListItem
+import com.masusheet.app.viewmodel.onStartChartAxisPickingOnSheet
+import com.masusheet.app.viewmodel.onStartChartRangePickingOnSheet
+import com.masusheet.app.viewmodel.onSwitchChartRowColumn
+import com.masusheet.app.viewmodel.onToggleChartYAxisColumn
+import com.masusheet.app.viewmodel.onUnhideColumnsAround
+import com.masusheet.app.viewmodel.onUnhideRowsAround
+import com.masusheet.app.viewmodel.onUpdateChartAxisFormat
+import com.masusheet.app.viewmodel.onUpdateSelectedObjectFillColor
+import com.masusheet.app.viewmodel.onUpdateSelectedObjectStrokeColor
+import com.masusheet.app.viewmodel.onUpdateSelectedObjectStrokeWidth
+import com.masusheet.app.viewmodel.resolveChartSeriesAxisRangeText
 import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /**
  * ============================================================================
@@ -153,8 +84,8 @@ import kotlin.math.sin
  */
 
 /**
- * Displays a native floating context menu at `(screenX, screenY)` on right-click (`BUTTON_SECONDARY`)
- * or long-press.
+ * [EN] Builds and positions the native floating context menu at `(screenX, screenY)` with contextual quick actions for cells, rows, columns, or floating objects.
+ * [JA] セル・行・列・オブジェクトの種別に応じたミニ書式バーと操作項目を持つネイティブコンテキストメニューを `(screenX, screenY)` に表示します。
  */
 fun MasuSheetNativeSheetContainer.showContextMenuAt(
     screenX: Float,
@@ -1256,7 +1187,8 @@ fun MasuSheetNativeSheetContainer.showContextMenuAt(
 }
 
 /**
- * A10: Opens the in-cell Data Validation list picker popup directly below the active cell (`crates/ui-egui/src/interact.rs:392-398`).
+ * [EN] Displays the in-cell Data Validation list picker popup directly beneath the active cell so selecting an item commits it immediately.
+ * [JA] リスト入力規則が設定されたアクティブセルの直下に選択肢ポップアップを表示し、タップ選択で即座にセル値を確定します。
  */
 fun MasuSheetNativeSheetContainer.showValidationListDropdownAt(
     screenX: Float,

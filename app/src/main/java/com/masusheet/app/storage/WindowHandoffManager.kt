@@ -1,8 +1,8 @@
 package com.masusheet.app.storage
 
 import android.content.Context
-import com.masusheet.app.OpenWorkbookSession
-import com.masusheet.app.WorkbookHandoffSerializer
+import com.masusheet.app.model.OpenWorkbookSession
+import com.masusheet.app.model.WorkbookHandoffSerializer
 import java.io.File
 import java.util.UUID
 
@@ -29,10 +29,25 @@ object WindowHandoffManager {
 
     private const val HANDOFF_DIR_NAME = "handoff"
     private const val STALE_MAX_AGE_MS = 30L * 60L * 1000L // 30 minutes
+    private const val MAX_HANDOFF_JSON_BYTES = 32L * 1024L * 1024L // 32 MiB
+    private const val MAX_HANDOFF_BIN_BYTES = 64L * 1024L * 1024L // 64 MiB
 
     private val STRICT_UUID_REGEX = Regex(
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
     )
+
+    /**
+     * [EN] Prunes expired one-time handoff files (`> 30 min`) from `cacheDir/handoff/` on Activity startup.
+     * [JA] アプリ起動時に `cacheDir/handoff/` 内の期限切れ一時ハンドオフファイル（30分超）を自動削除します。
+     */
+    fun pruneStaleHandoffFiles(context: Context) {
+        runCatching {
+            val dir = File(context.cacheDir, HANDOFF_DIR_NAME)
+            if (dir.isDirectory) {
+                pruneStaleEntries(dir)
+            }
+        }
+    }
 
     /**
      * [EN] Checks whether [token] is a syntactically valid canonical UUID (rejects paths, slashes, and dots).
@@ -96,10 +111,14 @@ object WindowHandoffManager {
             val binFile = File(canonicalDir, "$safeToken.bin")
             if (jsonFile.canonicalFile.parentFile != canonicalDir) return null
             if (binFile.canonicalFile.parentFile != canonicalDir) return null
-            if (!jsonFile.exists() || !jsonFile.isFile) return null
+            if (!jsonFile.exists() || !jsonFile.isFile || jsonFile.length() > MAX_HANDOFF_JSON_BYTES) return null
 
             val jsonText = jsonFile.readText(Charsets.UTF_8)
-            val bytes = if (binFile.exists() && binFile.isFile) binFile.readBytes() else null
+            val bytes = if (binFile.exists() && binFile.isFile && binFile.length() <= MAX_HANDOFF_BIN_BYTES) {
+                binFile.readBytes()
+            } else {
+                null
+            }
 
             runCatching { jsonFile.delete() }
             runCatching { if (binFile.exists()) binFile.delete() }

@@ -333,6 +333,31 @@ fn value_err(_a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     Err(CellError::Value)
 }
 
+/// [EN] Unescapes the 5 standard XML character entities (`&lt;`, `&gt;`, `&quot;`, `&apos;`, `&amp;`)
+///      and converts finite numeric strings to [`Value::Number`].
+/// [JA] 標準 XML 実体参照5種（`&lt;`, `&gt;`, `&quot;`, `&apos;`, `&amp;`）を展開し、
+///      有限な数値文字列であれば [`Value::Number`] に変換します。
+fn parse_xml_scalar(raw: &str) -> Value {
+    let unescaped = if raw.contains('&') {
+        raw.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&amp;", "&")
+    } else {
+        raw.to_string()
+    };
+    unescaped
+        .parse::<f64>()
+        .ok()
+        .filter(|n| n.is_finite())
+        .map_or_else(|| Value::from(unescaped), Value::Number)
+}
+
+/// [EN] Evaluates `FILTERXML(xml, xpath)` offline for tag-text paths (`/root/item`, `//price`) and
+///      attribute paths (`//item/@id`) without external network or DTD entity expansion (XXE-safe).
+/// [JA] 外部通信や DTD 展開を行わない安全なオフライン簡易パーサにより、`FILTERXML(xml, xpath)` の要素値および
+///      `@属性` 抽出を実行します（単一結果はスカラ、複数一致時は縦スピル配列を返却）。
 fn filterxml(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let xml = text(a, 0)?;
     let xpath = text(a, 1)?;
@@ -380,10 +405,10 @@ fn filterxml(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
                     && (quote == '"' || quote == '\'')
                 {
                     let inner = &val_start[1..];
-                    if let Some(end_q) = inner.find(quote) {
-                        let raw = &inner[..end_q];
-                        let v = raw.parse::<f64>().ok().filter(|n| n.is_finite()).map_or_else(|| Value::from(raw), Value::Number);
-                        results.push(v);
+                    if let Some(end_q) = inner.find(quote)
+                        && results.len() < MAX_CELLS
+                    {
+                        results.push(parse_xml_scalar(&inner[..end_q]));
                     }
                 }
             }
@@ -394,9 +419,8 @@ fn filterxml(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
             let body_rest = &after_name[tag_end + 1..];
             if let Some(cpos) = body_rest.find(&close_pat) {
                 let content = body_rest[..cpos].trim();
-                if !content.is_empty() && !content.contains('<') {
-                    let v = content.parse::<f64>().ok().filter(|n| n.is_finite()).map_or_else(|| Value::from(content), Value::Number);
-                    results.push(v);
+                if !content.is_empty() && !content.contains('<') && results.len() < MAX_CELLS {
+                    results.push(parse_xml_scalar(content));
                 }
                 rest = &body_rest[cpos + close_pat.len()..];
             } else {
@@ -413,6 +437,11 @@ fn filterxml(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     Array::new(results.len(), 1, results).map(Value::from).ok_or(CellError::Calc)
 }
 
+/// [EN] Heuristic offline script detector for `DETECTLANGUAGE(text)` returning ISO 639-1 codes
+///      (`"ja"`, `"ko"`, `"ru"`, `"ar"`, `"el"`, or `"en"`). Note: Han-only strings without Kana
+///      default to `"ja"` in this Japanese-first spreadsheet environment.
+/// [JA] 文字コードブロックに基づきオフラインで言語コード（`"ja"`, `"ko"`, `"ru"`, `"ar"`, `"el"`, `"en"`）を
+///      判定する `DETECTLANGUAGE(text)` 実装です（漢字のみの語句は日本語優先で `"ja"` を返します）。
 fn detectlanguage(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let s = text(a, 0)?;
     let trimmed = s.trim();
@@ -442,6 +471,9 @@ fn detectlanguage(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     Ok(Value::from("en"))
 }
 
+/// [EN] Offline dictionary implementation of `TRANSLATE(text, [source_language], [target_language])`
+///      for common English ⇄ Japanese spreadsheet terms; returns the original text when unmatched.
+/// [JA] 代表的な表計算用語をオフラインで日英相互翻訳する `TRANSLATE` 関数です（辞書外の文字列はそのまま返却）。
 fn translate_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let s = text(a, 0)?;
     let trimmed = s.trim();
@@ -514,6 +546,9 @@ fn translate_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     Ok(Value::from(trimmed))
 }
 
+/// [EN] Evaluates `GETPIVOTDATA(data_field, pivot_table, [field1, item1], ...)` over a rendered
+///      PivotTable range or scalar summary cell, returning `#REF!` when criteria are invalid or unmatched.
+/// [JA] 展開済みのピボットテーブル範囲または集計セルから条件に一致する値を取得する `GETPIVOTDATA` 関数です。
 fn getpivotdata(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     if a.len() < 2 {
         return Err(CellError::Ref);
@@ -528,28 +563,28 @@ fn getpivotdata(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     match &pt.value {
         Value::Number(n) => Ok(Value::Number(*n)),
         Value::Array(arr) => {
-            let field_lower = field.trim().to_ascii_lowercase();
+            let field_lower = field.trim().to_lowercase();
             let target_col = (0..arr.cols).find(|&c| {
-                matches!(arr.get(0, c), Some(Value::Text(t)) if t.to_ascii_lowercase().contains(&field_lower))
+                matches!(arr.get(0, c), Some(Value::Text(t)) if t.to_lowercase().contains(&field_lower))
             });
             let col = target_col.unwrap_or_else(|| arr.cols.saturating_sub(1));
             if a.len() >= 4 {
                 let mut criteria: Vec<(Option<usize>, String)> = Vec::new();
                 let mut idx = 2usize;
                 while idx + 1 < a.len() {
-                    let crit_field = text(a, idx)?.trim().to_ascii_lowercase();
-                    let crit_item = text(a, idx + 1)?.trim().to_ascii_lowercase();
+                    let crit_field = text(a, idx)?.trim().to_lowercase();
+                    let crit_item = text(a, idx + 1)?.trim().to_lowercase();
                     let crit_col = (0..arr.cols).find(|&c| {
-                        matches!(arr.get(0, c), Some(Value::Text(t)) if t.to_ascii_lowercase() == crit_field)
+                        matches!(arr.get(0, c), Some(Value::Text(t)) if t.to_lowercase() == crit_field)
                     });
                     criteria.push((crit_col, crit_item));
                     idx += 2;
                 }
                 for r in 1..arr.rows {
                     let all_match = criteria.iter().all(|(cc, want)| match cc {
-                        Some(c_idx) => matches!(arr.get(r, *c_idx), Some(Value::Text(t)) if t.to_ascii_lowercase() == *want),
+                        Some(c_idx) => matches!(arr.get(r, *c_idx), Some(Value::Text(t)) if t.to_lowercase() == *want),
                         None => (0..arr.cols).any(|c_idx| {
-                            matches!(arr.get(r, c_idx), Some(Value::Text(t)) if t.to_ascii_lowercase() == *want)
+                            matches!(arr.get(r, c_idx), Some(Value::Text(t)) if t.to_lowercase() == *want)
                         }),
                     });
                     if all_match
@@ -573,6 +608,9 @@ fn getpivotdata(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     }
 }
 
+/// [EN] Validates `IMAGE(source, [alt_text], [sizing], [height], [width])` arguments without
+///      performing network I/O, returning `alt_text` when provided or `source` as cell text.
+/// [JA] 外部通信を行わずに `IMAGE` 関数の引数を検証し、`alt_text`（未指定時は `source`）を表示文字列として返します。
 fn image_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let src = text(a, 0)?;
     if src.trim().is_empty() {
@@ -605,6 +643,9 @@ fn image_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     Ok(Value::from(src))
 }
 
+/// [EN] Validates `RTD(prog_id, server, topic1, ...)` arguments and returns `#N/A` because Windows
+///      COM real-time servers are unavailable on Android/offline engines.
+/// [JA] `RTD` 関数の必須引数を検証し、COM サーバー非対応環境として `#N/A` を返します。
 fn rtd_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let prog = text(a, 0)?;
     let topic = text(a, 2)?;
@@ -614,6 +655,9 @@ fn rtd_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     Err(CellError::NA)
 }
 
+/// [EN] Validates `STOCKHISTORY` ticker, date range, interval (`0..=2`), and header (`0..=2`)
+///      parameters, then returns `#N/A` honestly because no live market feed is bundled offline.
+/// [JA] `STOCKHISTORY` の銘柄・日付範囲・間隔・ヘッダ引数を検証し、オフライン計算のため架空の株価は返さず `#N/A` を返します。
 fn stockhistory(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let ticker = text(a, 0)?;
     if ticker.trim().is_empty() {
@@ -644,6 +688,9 @@ fn stockhistory(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     Err(CellError::NA)
 }
 
+/// [EN] Propagates upstream errors and validates `COPILOT(prompt, ...)` while keeping formula
+///      recalculation deterministic and offline (`#N/A`; interactive AI lives in the AI Assistant panel).
+/// [JA] 数式再計算の決定論性とオフライン安全性を保つため、引数検証後に `#N/A` を返します（対話型AIはAIパネルで提供）。
 fn copilot_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let prompt = text(a, 0)?;
     if prompt.trim().is_empty() {
@@ -666,6 +713,9 @@ fn copilot_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     Err(CellError::NA)
 }
 
+/// [EN] Validates `PY(code, [return_type])` non-empty code argument and returns `#N/A` because no
+///      Python interpreter is embedded inside cell recalculation.
+/// [JA] `PY` 関数のコード引数を検証し、セル計算内に Python ランタイムを持たないため `#N/A` を返します。
 fn py_fn(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let code = text(a, 0)?;
     if code.trim().is_empty() {
@@ -711,7 +761,7 @@ pub(crate) fn specs() -> Vec<FnSpec> {
         f!("N", 1, 1, Information, A, "N(value)", "Converts a value to a number: numbers stay, TRUE is 1, everything else is 0.", n_fn),
         f!("INFO", 1, 1, Information, S, "INFO(type_text)", "Returns information about the operating environment.", info),
         f!("AND", 1, VAR, Logical, A, "AND(logical1, [logical2], ...)", "TRUE when every argument is TRUE.", and),
-        f!("OR", 1, VAR, Logical, A, "OR(logical1, [logical2], ...)", "OR(logical1, [logical2], ...) — TRUE when at least one argument is TRUE.", or),
+        f!("OR", 1, VAR, Logical, A, "OR(logical1, [logical2], ...)", "TRUE when at least one argument is TRUE.", or),
         f!("XOR", 1, VAR, Logical, A, "XOR(logical1, [logical2], ...)", "TRUE when an odd number of arguments are TRUE.", xor),
         f!("NOT", 1, 1, Logical, S, "NOT(logical)", "Reverses a logical value.", not),
         f!("TRUE", 0, 0, Logical, S, "TRUE()", "Returns the logical value TRUE.", true_fn),
@@ -967,7 +1017,59 @@ mod tests {
         is_text(ev("ENCODEURL", vec![t("a b&c/é")]), "a%20b%26c%2F%C3%A9");
         is_err(ev("WEBSERVICE", vec![t("http://x")]), CellError::Value);
         is_err(ev("FILTERXML", vec![t("<a/>"), t("//a")]), CellError::Value);
+        is_text(
+            ev("FILTERXML", vec![t("<root><item id=\"A&amp;B\">125</item></root>"), t("//item/@id")]),
+            "A&B",
+        );
+        let xml_attrs = ev(
+            "FILTERXML",
+            vec![t("<root><item id=\"A&amp;B\">125</item><item id=\"C\">250</item></root>"), t("//item/@id")],
+        );
+        assert_eq!(rows_of(&xml_attrs), vec![vec![tv("A&B")], vec![tv("C")]]);
+        let xml_nums = ev(
+            "FILTERXML",
+            vec![t("<root><price>120</price><price>240.5</price></root>"), t("/root/price")],
+        );
+        assert_eq!(rows_of(&xml_nums), vec![vec![nv(120.0)], vec![nv(240.5)]]);
         is_err(ev("CUBEVALUE", vec![t("conn")]), CellError::NA);
         is_err(ev("CUBESETCOUNT", vec![t("set")]), CellError::NA);
+    }
+
+    #[test]
+    fn masusheet_extended_worksheet_functions() {
+        // DETECTLANGUAGE & TRANSLATE
+        is_text(ev("DETECTLANGUAGE", vec![t("こんにちは")]), "ja");
+        is_text(ev("DETECTLANGUAGE", vec![t("売上合計")]), "ja");
+        is_text(ev("DETECTLANGUAGE", vec![t("Quarterly Revenue")]), "en");
+        is_err(ev("DETECTLANGUAGE", vec![t("   ")]), CellError::Value);
+
+        is_text(ev("TRANSLATE", vec![t("Sales"), t("en"), t("ja")]), "売上");
+        is_text(ev("TRANSLATE", vec![t("合計"), t("ja"), t("en")]), "Total");
+        is_text(ev("TRANSLATE", vec![t("CustomTerm"), t("en"), t("ja")]), "CustomTerm");
+
+        // GETPIVOTDATA (scalar & array criteria lookup including Japanese headers)
+        close(ev("GETPIVOTDATA", vec![t("売上"), n(4200.0)]), 4200.0);
+        let pt = arr(vec![
+            vec![tv("地域"), tv("売上")],
+            vec![tv("東京"), nv(1500.0)],
+            vec![tv("大阪"), nv(980.0)],
+        ]);
+        close(ev("GETPIVOTDATA", vec![t("売上"), rf(pt.clone()), t("地域"), t("大阪")]), 980.0);
+        is_err(ev("GETPIVOTDATA", vec![t("売上"), rf(pt), t("地域"), t("札幌")]), CellError::Ref);
+
+        // IMAGE validation
+        is_text(ev("IMAGE", vec![t("https://example.com/chart.png"), t("Sales Chart"), n(0.0)]), "Sales Chart");
+        is_err(ev("IMAGE", vec![t(""), t("Alt")]), CellError::Value);
+        is_err(ev("IMAGE", vec![t("https://example.com/a.png"), t("Alt"), n(9.0)]), CellError::Value);
+
+        // Offline honest #N/A functions (RTD, STOCKHISTORY, COPILOT, PY)
+        is_err(ev("RTD", vec![t("my.rtd"), t(""), t("topic1")]), CellError::NA);
+        is_err(ev("RTD", vec![t(""), t(""), t("topic1")]), CellError::Value);
+        is_err(ev("STOCKHISTORY", vec![t("MSFT"), n(45000.0), n(45010.0), n(0.0), n(1.0)]), CellError::NA);
+        is_err(ev("STOCKHISTORY", vec![t("MSFT"), n(45010.0), n(45000.0)]), CellError::Value);
+        is_err(ev("COPILOT", vec![t("Summarize Q1")]), CellError::NA);
+        is_err(ev("COPILOT", vec![t("Summarize Q1"), e(CellError::Div0)]), CellError::Div0);
+        is_err(ev("PY", vec![t("sum([1, 2, 3])")]), CellError::NA);
+        is_err(ev("PY", vec![t("   ")]), CellError::Value);
     }
 }
