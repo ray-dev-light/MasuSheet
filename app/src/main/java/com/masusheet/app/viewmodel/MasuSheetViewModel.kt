@@ -1148,12 +1148,6 @@ class MasuSheetViewModel(
 
     // --- Sheet Floating Objects (Images, Shapes, TextBoxes, Charts) ---
 
-    fun onToggleTouchRangeSelectMode() {
-        _uiState.value = _uiState.value.copy(
-            isTouchRangeSelectMode = !_uiState.value.isTouchRangeSelectMode
-        )
-    }
-
     fun onCommitCellEdit(
         row: Int,
         col: Int,

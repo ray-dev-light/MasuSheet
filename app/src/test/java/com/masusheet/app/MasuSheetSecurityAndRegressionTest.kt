@@ -445,16 +445,16 @@ class MasuSheetSecurityAndRegressionTest {
         container.layout(0, 0, 1080, 1920)
         val grid = container.gridView
 
-        // 1. Default 1-finger touch drag (isTouchRangeSelectMode == false) must scroll the sheet vertically!
+        // 1. Default 1-finger touch drag on unselected cells must scroll the sheet vertically!
         val t0 = SystemClock.uptimeMillis()
         grid.dispatchTouchEvent(obtainFingerTouchEvent(t0, t0, MotionEvent.ACTION_DOWN, 400f, 900f))
         grid.dispatchTouchEvent(obtainFingerTouchEvent(t0, t0 + 16, MotionEvent.ACTION_MOVE, 400f, 600f))
         grid.dispatchTouchEvent(obtainFingerTouchEvent(t0, t0 + 32, MotionEvent.ACTION_UP, 400f, 600f))
         assertTrue("1-finger touch swipe up must pan scrollYPx > 0, got ${grid.scrollYPx}", grid.scrollYPx > 0)
 
-        // 2. Enabling Touch Range Select Mode allows 1-finger drag to select cell ranges!
+        // 2. Pressing inside the currently selected cell and dragging expands the 2D cell selection directly!
         grid.scrollYPx = 0
-        vm.onToggleTouchRangeSelectMode()
+        vm.onSelectCell(1, 1)
         container.bindState(vm.uiState.value)
         val r0Rect = grid.getCellScreenRect(1, 1)
         val r2Rect = grid.getCellScreenRect(3, 2)
@@ -462,7 +462,7 @@ class MasuSheetSecurityAndRegressionTest {
         grid.dispatchTouchEvent(obtainFingerTouchEvent(t1, t1, MotionEvent.ACTION_DOWN, r0Rect.centerX(), r0Rect.centerY()))
         grid.dispatchTouchEvent(obtainFingerTouchEvent(t1, t1 + 16, MotionEvent.ACTION_MOVE, r2Rect.centerX(), r2Rect.centerY()))
         grid.dispatchTouchEvent(obtainFingerTouchEvent(t1, t1 + 32, MotionEvent.ACTION_UP, r2Rect.centerX(), r2Rect.centerY()))
-        assertTrue("Touch range select drag must span multiple rows", vm.uiState.value.viewport.selEndRow >= 3)
+        assertTrue("Selected-cell touch drag must span multiple rows", vm.uiState.value.viewport.selEndRow >= 3)
 
         // 3. Clicking the center of a wide (300pt) column header must select the column, NOT trigger divider resize (H-12)
         vm.onResizeColumn(0, 300f)
@@ -484,7 +484,6 @@ class MasuSheetSecurityAndRegressionTest {
         )
         container.layout(0, 0, 1080, 1920)
         val grid = container.gridView
-        assertFalse(vm.uiState.value.isTouchRangeSelectMode)
 
         // 1. Tap C3 (row=2, col=2) with 1 finger -> selects C3 on ACTION_UP
         val c3Rect = grid.getCellScreenRect(2, 2)
@@ -674,5 +673,235 @@ class MasuSheetSecurityAndRegressionTest {
         } finally {
             controller.destroy()
         }
+    }
+
+    private fun obtainTwoFingerTouchEvent(
+        downTime: Long,
+        eventTime: Long,
+        action: Int,
+        x0: Float,
+        y0: Float,
+        x1: Float,
+        y1: Float
+    ): MotionEvent {
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_FINGER
+            },
+            MotionEvent.PointerProperties().apply {
+                id = 1
+                toolType = MotionEvent.TOOL_TYPE_FINGER
+            }
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                x = x0
+                y = y0
+                pressure = 1f
+                size = 1f
+            },
+            MotionEvent.PointerCoords().apply {
+                x = x1
+                y = y1
+                pressure = 1f
+                size = 1f
+            }
+        )
+        return MotionEvent.obtain(
+            downTime,
+            eventTime,
+            action,
+            2,
+            props,
+            coords,
+            0,
+            0,
+            1f,
+            1f,
+            0,
+            0,
+            android.view.InputDevice.SOURCE_TOUCHSCREEN,
+            0
+        )
+    }
+
+    @Test
+    fun smartphoneTouch_scrollWhileChartOrImageSelected_keepsObjectSelected_andTapOutsideDeselects() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val vm = createTestViewModel(blank = true)
+        vm.onCommitCellEdit(0, 0, "X")
+        vm.onCommitCellEdit(0, 1, "Y")
+        vm.onCommitCellEdit(1, 0, "1")
+        vm.onCommitCellEdit(1, 1, "10")
+        vm.onCommitCellEdit(2, 0, "2")
+        vm.onCommitCellEdit(2, 1, "20")
+        vm.onSelectCell(0, 0, 2, 1)
+        vm.onInsertChart("scatter_lines")
+        val chart = vm.uiState.value.sheetObjects.single()
+        val chartId = chart.id
+        val origXPt = chart.xPt
+        val origYPt = chart.yPt
+        assertEquals(chartId, vm.uiState.value.selectedObjectId)
+
+        val container = MasuSheetNativeSheetContainer(context, vm)
+        container.bindState(vm.uiState.value)
+        container.measure(
+            MeasureSpec.makeMeasureSpec(1080, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(1920, MeasureSpec.EXACTLY)
+        )
+        container.layout(0, 0, 1080, 1920)
+        val grid = container.gridView
+
+        // 1. 1-finger swipe UP on the grid outside the chart MUST scroll the sheet while keeping the chart selected!
+        val swipeCellRect = grid.getCellScreenRect(25, 1)
+        val t0 = SystemClock.uptimeMillis()
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t0, t0, MotionEvent.ACTION_DOWN, swipeCellRect.centerX(), swipeCellRect.centerY()))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t0, t0 + 20, MotionEvent.ACTION_MOVE, swipeCellRect.centerX(), swipeCellRect.centerY() - 260f))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t0, t0 + 40, MotionEvent.ACTION_UP, swipeCellRect.centerX(), swipeCellRect.centerY() - 260f))
+        assertTrue("1-finger swipe while chart selected must scroll sheet", grid.scrollYPx > 0)
+        assertEquals("Chart must remain selected during 1-finger sheet scroll", chartId, vm.uiState.value.selectedObjectId)
+
+        // 2. 2-finger pan starting DIRECTLY ON TOP OF the selected chart body must cancel 1-finger drag, keep chart at original position, and scroll while keeping chart selected!
+        grid.scrollYPx = 0
+        container.bindState(vm.uiState.value)
+        val chartRect = grid.getSheetObjectScreenRect(chart)
+        val cx = chartRect.centerX()
+        val cy = chartRect.centerY()
+        val t1 = t0 + 600
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t1, t1, MotionEvent.ACTION_DOWN, cx - 30f, cy))
+        val ptr2Down = MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        grid.dispatchTouchEvent(obtainTwoFingerTouchEvent(t1, t1 + 10, ptr2Down, cx - 30f, cy, cx + 30f, cy))
+        grid.dispatchTouchEvent(obtainTwoFingerTouchEvent(t1, t1 + 30, MotionEvent.ACTION_MOVE, cx - 30f, cy - 220f, cx + 30f, cy - 220f))
+        val ptr2Up = MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        grid.dispatchTouchEvent(obtainTwoFingerTouchEvent(t1, t1 + 45, ptr2Up, cx - 30f, cy - 220f, cx + 30f, cy - 220f))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t1, t1 + 60, MotionEvent.ACTION_UP, cx - 30f, cy - 220f))
+
+        assertTrue("2-finger pan on top of chart must scroll sheet", grid.scrollYPx > 0)
+        assertEquals("Chart must remain selected after 2-finger pan", chartId, vm.uiState.value.selectedObjectId)
+        val afterPanChart = vm.uiState.value.sheetObjects.single()
+        assertEquals("Chart xPt must not drift during 2-finger pan", origXPt, afterPanChart.xPt, 0.01f)
+        assertEquals("Chart yPt must not drift during 2-finger pan", origYPt, afterPanChart.yPt, 0.01f)
+
+        // 3. 1-finger stationary tap (no movement) on an empty cell deselects the chart and selects that cell!
+        grid.scrollYPx = 0
+        container.bindState(vm.uiState.value)
+        val tapCellRect = grid.getCellScreenRect(22, 1)
+        val t2 = t1 + 600
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t2, t2, MotionEvent.ACTION_DOWN, tapCellRect.centerX(), tapCellRect.centerY()))
+        grid.dispatchTouchEvent(obtainFingerTouchEvent(t2, t2 + 20, MotionEvent.ACTION_UP, tapCellRect.centerX(), tapCellRect.centerY()))
+        assertNull("Stationary tap outside chart must deselect chart", vm.uiState.value.selectedObjectId)
+        assertEquals(22, vm.uiState.value.viewport.activeRow)
+        assertEquals(1, vm.uiState.value.viewport.activeCol)
+    }
+
+    @Test
+    fun chartImageAndShapePersistence_savedXlsxContainsOoxmlChartAndRestoresLosslesslyOnReopen() {
+        val docGw = FakeDocumentIoGateway()
+        val repo1 = MasuSheetPreferencesRepository(FakePreferenceStore(), InMemorySecretStore())
+        val vm1 = MasuSheetViewModel(
+            preferencesRepository = repo1,
+            documentGateway = docGw,
+            engineGateway = RustJniEngineGateway(),
+            startWithBlankWorkbook = true
+        )
+        vm1.onCommitCellEdit(0, 0, "Month")
+        vm1.onCommitCellEdit(0, 1, "Revenue")
+        vm1.onCommitCellEdit(1, 0, "Jan")
+        vm1.onCommitCellEdit(1, 1, "150")
+        vm1.onCommitCellEdit(2, 0, "Feb")
+        vm1.onCommitCellEdit(2, 1, "280")
+        vm1.onCommitCellEdit(3, 0, "Mar")
+        vm1.onCommitCellEdit(3, 1, "410")
+
+        vm1.onSelectCell(0, 0, 3, 1)
+        vm1.onInsertChart("scatter_lines")
+        val createdChartId = vm1.uiState.value.sheetObjects.single().id
+        vm1.onUpdateSheetObjectText(createdChartId, "Q1 Growth")
+        vm1.onUpdateChartAxisFormat(objectId = createdChartId, isXAxis = false, majorStep = 50f)
+
+        vm1.onInsertShape("rounded_rect")
+        val createdShapeId = vm1.uiState.value.sheetObjects.last().id
+        vm1.onUpdateSheetObjectText(createdShapeId, "Summary Note")
+
+        val tinyPng = ByteArray(16).also {
+            val sig = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+            System.arraycopy(sig, 0, it, 0, sig.size)
+        }
+        assertTrue(vm1.onPasteScreenshotOrLatestImage(tinyPng, "Logo.png"))
+        assertEquals(3, vm1.uiState.value.sheetObjects.size)
+
+        // Save workbook via standard save flow into FakeDocumentIoGateway
+        val uri = "content://test/ChartPersistenceTest.xlsx"
+        vm1.onTriggerSave()
+        assertTrue(vm1.onCompletePendingSave(uri))
+        val savedBytes = docGw.files[uri]
+        assertNotNull("Saved .xlsx bytes must exist", savedBytes)
+        assertTrue(savedBytes!!.size > 200)
+
+        // Verify ZIP entries contain BOTH genuine Excel OOXML chart/drawing/media AND lossless MasuSheet customXml
+        val zipEntries = mutableSetOf<String>()
+        java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(savedBytes)).use { zis ->
+            var e = zis.nextEntry
+            while (e != null) {
+                zipEntries.add(e.name)
+                zis.closeEntry()
+                e = zis.nextEntry
+            }
+        }
+        assertTrue("Expected genuine Excel OOXML chart xl/charts/chart1.xml in $zipEntries", zipEntries.any { it.startsWith("xl/charts/chart") && it.endsWith(".xml") })
+        assertTrue("Expected genuine Excel OOXML drawing xl/drawings/drawing1.xml in $zipEntries", zipEntries.any { it.startsWith("xl/drawings/drawing") && it.endsWith(".xml") })
+        assertTrue("Expected genuine Excel OOXML media image in $zipEntries", zipEntries.any { it.startsWith("xl/media/") })
+        assertTrue("Expected MasuSheet lossless customXml overlay in $zipEntries", "customXml/masusheet_objects_v1.xml" in zipEntries)
+
+        // Reopen the saved .xlsx in a completely fresh MasuSheetViewModel instance
+        val repo2 = MasuSheetPreferencesRepository(FakePreferenceStore(), InMemorySecretStore())
+        val vm2 = MasuSheetViewModel(
+            preferencesRepository = repo2,
+            documentGateway = docGw,
+            engineGateway = RustJniEngineGateway(),
+            startWithBlankWorkbook = true
+        )
+        assertTrue(vm2.onOpenDocumentUri(uri))
+        assertEquals(3, vm2.uiState.value.sheetObjects.size)
+
+        val restoredChart = vm2.uiState.value.sheetObjects.first { it.kind == SheetObjectKind.CHART }
+        assertEquals("scatter_lines", restoredChart.subType)
+        assertEquals("Q1 Growth", restoredChart.title)
+        assertEquals(50f, restoredChart.yAxisMajorStep ?: 0f, 0.01f)
+        assertEquals(listOf(150f, 280f, 410f), restoredChart.chartSeries.first().values)
+
+        val restoredShape = vm2.uiState.value.sheetObjects.first { it.kind == SheetObjectKind.SHAPE }
+        assertEquals("roundRect", restoredShape.subType)
+        assertEquals("Summary Note", restoredShape.text)
+        assertEquals("Summary Note", restoredShape.title)
+
+        val restoredImg = vm2.uiState.value.sheetObjects.first { it.kind == SheetObjectKind.IMAGE }
+        assertArrayEquals(tinyPng, restoredImg.imageBytes)
+
+        // Inserting a new object after reopen must get a unique non-colliding ID
+        val existingIds = vm2.uiState.value.sheetObjects.map { it.id }.toSet()
+        vm2.onInsertShape("rectangle")
+        assertEquals(4, vm2.uiState.value.sheetObjects.size)
+        assertFalse(vm2.uiState.value.sheetObjects.last().id in existingIds)
+    }
+
+    @Test
+    fun fullRibbonShowAndHide_togglesEntireRibbonAndStaysHiddenWhenSelectingChartOrCell() {
+        val vm = createTestViewModel(blank = true)
+        assertTrue(vm.uiState.value.toolbarVisible)
+
+        vm.onToggleToolbar()
+        assertFalse("Ribbon must hide when toggled off", vm.uiState.value.toolbarVisible)
+
+        // Selecting cells or inserting/selecting objects must NOT force the hidden ribbon back open
+        vm.onCommitCellEdit(0, 0, "100")
+        vm.onInsertShape("rectangle")
+        val shapeId = vm.uiState.value.sheetObjects.single().id
+        vm.onSelectSheetObject(shapeId)
+        assertFalse("Ribbon must stay hidden while selecting objects", vm.uiState.value.toolbarVisible)
+
+        vm.onToggleToolbar()
+        assertTrue("Ribbon must reappear when toggled back on", vm.uiState.value.toolbarVisible)
     }
 }

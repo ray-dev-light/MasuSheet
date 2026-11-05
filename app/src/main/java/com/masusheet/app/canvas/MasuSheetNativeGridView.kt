@@ -422,6 +422,8 @@ class MasuSheetNativeGridView(
                     !isDraggingFormulaPointRow &&
                     !container.canPointFormulaReference() &&
                     !hasMovedSinceDown &&
+                    !isRotatingObject &&
+                    activeObjectResizePart == null &&
                     !isPointOnSelectionCornerHandle(downX, downY) &&
                     !isPointOnSelectionCornerHandle(e.x, e.y) &&
                     !isPointOnTopLeftSelectionRangeHandle(downX, downY)
@@ -429,6 +431,10 @@ class MasuSheetNativeGridView(
                     isDraggingRangeSelection = false
                     pendingTouchTapSelect = false
                     pendingDoubleTapOpenEditor = false
+                    draggingObjectId = null
+                    activeObjectResizePart = null
+                    isRotatingObject = false
+                    multiDragStartPositions = emptyMap()
                     handleRightClickAt(e.x, e.y)
                 }
             }
@@ -491,9 +497,6 @@ class MasuSheetNativeGridView(
         isFocusableInTouchMode = true
     }
 
-    var isTouchRangeSelectMode: Boolean = false
-        internal set
-
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val measuredW = resolveSize((1080f * density).roundToInt().coerceAtLeast(320), widthMeasureSpec)
         val measuredH = resolveSize((1600f * density).roundToInt().coerceAtLeast(480), heightMeasureSpec)
@@ -517,7 +520,6 @@ class MasuSheetNativeGridView(
         sheetObjects = state.sheetObjects
         selectedObjectId = state.selectedObjectId
         selectedObjectIds = state.effectiveSelectedObjectIds
-        isTouchRangeSelectMode = state.isTouchRangeSelectMode
         if (prevUid != currentViewport.uid || prevSheet != currentViewport.sheetIndex) {
             scrollXPx = 0
             scrollYPx = 0

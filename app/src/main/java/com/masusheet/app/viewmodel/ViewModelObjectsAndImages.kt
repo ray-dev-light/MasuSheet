@@ -181,7 +181,7 @@ fun MasuSheetViewModel.onInsertShape(
     val id = "obj_${nextObjectCounter++}"
     val normalizedKind = when (shapeKind.lowercase()) {
         "circle", "ellipse", "oval" -> "ellipse"
-        "roundrect", "round_rect", "roundedrect" -> "roundRect"
+        "roundrect", "round_rect", "rounded_rect", "roundedrect" -> "roundRect"
         "triangle" -> "triangle"
         "diamond" -> "diamond"
         "pentagon" -> "pentagon"

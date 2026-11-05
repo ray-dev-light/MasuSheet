@@ -5,6 +5,7 @@ import com.masusheet.app.storage.AndroidKeystoreSecretStore
 import com.masusheet.app.storage.InMemorySecretStore
 import com.masusheet.app.storage.MasuSheetClipboardImageProvider
 import com.masusheet.app.storage.SecretStore
+import com.masusheet.app.storage.WorkbookXlsxObjectPersistence
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -85,11 +86,17 @@ fun MasuSheetViewModel.onDirtyChanged(dirty: Boolean) {
  */
 fun MasuSheetViewModel.onSaveRequestedFromEngine(fileName: String, base64Payload: String) {
     try {
-        val bytes = Base64.getDecoder().decode(base64Payload)
+        val rawBytes = Base64.getDecoder().decode(base64Payload)
         val safeName = MasuSheetConfig.sanitizeWorkbookFileName(fileName)
+        val ext = MasuSheetConfig.extractExtensionOrDefault(safeName, "xlsx").lowercase()
+        val finalBytes = if (ext in setOf("xlsx", "xlsm")) {
+            WorkbookXlsxObjectPersistence.embedIntoXlsxBytes(rawBytes, buildCurrentWorkbookPersistenceSession())
+        } else {
+            rawBytes
+        }
         _uiState.value = _uiState.value.copy(
             pendingSaveFileName = safeName,
-            pendingSaveBytes = bytes
+            pendingSaveBytes = finalBytes
         )
     } catch (e: Exception) {
         onEngineError("Failed to decode workbook payload: ${e.message}")
@@ -225,12 +232,51 @@ internal fun MasuSheetViewModel.scanExistingFilesInFolder(folderPath: String): L
     return items
 }
 
+internal fun MasuSheetViewModel.buildCurrentWorkbookPersistenceSession(): OpenWorkbookSession {
+    val cur = _uiState.value
+    return OpenWorkbookSession(
+        id = cur.activeWorkbookId,
+        nativeSessionId = engineGateway.activeSessionId,
+        sourceUri = "",
+        title = cur.workbookTitle,
+        sampleKind = cur.activeSample,
+        savedWorkbookBytes = null,
+        activeSheetIndex = cur.viewport.sheetIndex,
+        sheetObjects = cur.sheetObjects.toList(),
+        pivotTables = cur.pivotTables.toList(),
+        customColWidths = HashMap(customColWidths),
+        customRowHeights = HashMap(customRowHeights),
+        customWrapCells = HashMap(customWrapCells),
+        customCellStyles = HashMap(customCellStyles),
+        customSheetMerges = HashMap(customSheetMerges),
+        sheetTabColors = HashMap(cur.sheetTabColors),
+        cellComments = HashMap(cur.cellComments),
+        cellHyperlinks = HashMap(cur.cellHyperlinks),
+        viewportSnapshot = cur.viewport
+    )
+}
+
+internal fun MasuSheetViewModel.advanceObjectCounterPast(objects: List<NativeSheetObject>) {
+    var maxSeen = nextObjectCounter - 1
+    for (obj in objects) {
+        val trailingNum = obj.id.substringAfterLast('_').toIntOrNull()
+        if (trailingNum != null && trailingNum > maxSeen) {
+            maxSeen = trailingNum
+        }
+    }
+    if (maxSeen + 1 > nextObjectCounter) {
+        nextObjectCounter = maxSeen + 1
+    }
+}
+
 /**
  * [EN] ViewModel action/helper `buildExportBytesForFormat` handling build export bytes for format while keeping [MasuSheetUiState] and Undo history consistent.
  * [JA] [MasuSheetViewModel] の `buildExportBytesForFormat` アクション／ヘルパー処理を実行し、UI状態と履歴の整合性を保ちます。
  */
 internal fun MasuSheetViewModel.buildExportBytesForFormat(fileNameWithExt: String, extension: String): ByteArray? {
     val ext = extension.lowercase()
+    ensureDefaultSalesDashboardChartsMaterialized()
+    engineGateway.syncWorkbookObjects(_uiState.value.sheetObjects)
     return when (ext) {
         "pdf" -> engineGateway.exportPdfBytes()
         "csv", "tsv" -> {
@@ -255,6 +301,10 @@ internal fun MasuSheetViewModel.buildExportBytesForFormat(fileNameWithExt: Strin
                 }
                 sb.toString().toByteArray()
             }
+        }
+        "xlsx", "xlsm" -> {
+            val rawBytes = engineGateway.saveWorkbookBytes(fileNameWithExt) ?: return null
+            WorkbookXlsxObjectPersistence.embedIntoXlsxBytes(rawBytes, buildCurrentWorkbookPersistenceSession())
         }
         else -> engineGateway.saveWorkbookBytes(fileNameWithExt)
     }
@@ -416,7 +466,10 @@ fun MasuSheetViewModel.saveCurrentWorkbookToSessionList(includeSerializedBytes: 
     currentWorkbookIdForStacks = cur.activeWorkbookId
     val existing = cur.openWorkbooks.firstOrNull { it.id == cur.activeWorkbookId }
     val serializedBytes = if (includeSerializedBytes) {
-        runCatching { engineGateway.saveWorkbookBytes(cur.workbookTitle) }.getOrNull() ?: existing?.savedWorkbookBytes
+        runCatching {
+            engineGateway.syncWorkbookObjects(cur.sheetObjects)
+            engineGateway.saveWorkbookBytes(cur.workbookTitle)
+        }.getOrNull() ?: existing?.savedWorkbookBytes
     } else {
         existing?.savedWorkbookBytes
     }
@@ -626,7 +679,10 @@ fun MasuSheetViewModel.prepareWorkbookSessionForNewWindow(
     if (target.savedWorkbookBytes == null && target.nativeSessionId > 0L) {
         val prevSid = engineGateway.activeSessionId
         engineGateway.switchSession(target.nativeSessionId)
-        val exported = runCatching { engineGateway.saveWorkbookBytes(target.title) }.getOrNull()
+        val exported = runCatching {
+            engineGateway.syncWorkbookObjects(target.sheetObjects)
+            engineGateway.saveWorkbookBytes(target.title)
+        }.getOrNull()
         engineGateway.switchSession(prevSid)
         target = target.copy(savedWorkbookBytes = exported)
     }
@@ -958,27 +1014,63 @@ fun MasuSheetViewModel.onOpenDocumentUri(uriString: String): Boolean {
     val newSid = existingByUri?.nativeSessionId?.takeIf { it > 0L }?.also { engineGateway.switchSession(it) }
         ?: engineGateway.createSession("blank")
     val snap = engineGateway.openWorkbookBytes(safeName, bytes).copy(sessionId = newSid)
+    val persistedOverlay = WorkbookXlsxObjectPersistence.extractFromXlsxBytes(bytes)
+    val restoredObjects: List<NativeSheetObject>
+    val restoredPivots: List<PivotTableDefinition>
+    val restoredTabColors: Map<Int, Int>
+    val restoredComments: Map<Pair<Int, Long>, String>
+    val restoredLinks: Map<Pair<Int, Long>, String>
+    val finalViewport: NativeViewportSnapshot
+    if (persistedOverlay != null) {
+        customColWidths.putAll(persistedOverlay.customColWidths)
+        customRowHeights.putAll(persistedOverlay.customRowHeights)
+        customWrapCells.putAll(persistedOverlay.customWrapCells)
+        customCellStyles.putAll(persistedOverlay.customCellStyles)
+        customSheetMerges.putAll(persistedOverlay.customSheetMerges)
+        sizeRevisionBump++
+        restoredObjects = persistedOverlay.sheetObjects
+        restoredPivots = persistedOverlay.pivotTables
+        restoredTabColors = persistedOverlay.sheetTabColors
+        restoredComments = persistedOverlay.cellComments
+        restoredLinks = persistedOverlay.cellHyperlinks
+        engineGateway.syncWorkbookObjects(restoredObjects)
+        finalViewport = decorateWithCustomSizes(snap)
+    } else {
+        restoredObjects = engineGateway.readWorkbookObjects()
+        restoredPivots = emptyList()
+        restoredTabColors = emptyMap()
+        restoredComments = emptyMap()
+        restoredLinks = emptyMap()
+        finalViewport = snap
+    }
+    advanceObjectCounterPast(restoredObjects)
+
     _uiState.value = _uiState.value.copy(
         activeWorkbookId = nextBookId,
         workbookTitle = safeName,
-        definedNames = snap.definedNames.associate { it.name to it.refersTo },
+        definedNames = finalViewport.definedNames.associate { it.name to it.refersTo },
         saveDialogBaseName = MasuSheetConfig.extractBaseNameWithoutExtension(safeName),
         saveDialogExtension = MasuSheetConfig.extractExtensionOrDefault(safeName, "xlsx"),
         isDirty = false,
-        sheetObjects = emptyList(),
+        sheetObjects = restoredObjects,
         selectedObjectId = null,
         selectedObjectIds = emptySet(),
-        pivotTables = emptyList(),
-        activePivotTableId = null,
+        pivotTables = restoredPivots,
+        activePivotTableId = restoredPivots.firstOrNull {
+            it.containsCell(finalViewport.sheetIndex, finalViewport.activeRow, finalViewport.activeCol)
+        }?.id,
         isPivotFieldsPaneOpen = false,
         isCreatePivotDialogOpen = false,
         dismissedPivotLauncherIds = emptySet(),
+        sheetTabColors = restoredTabColors,
+        cellComments = restoredComments,
+        cellHyperlinks = restoredLinks,
         activeColumnFilterPopup = null,
         activeColumnFilters = emptyMap(),
         filteredHiddenRows = emptyMap(),
         recentWorkbooks = preferencesRepository.getRecentWorkbooks(),
-        viewport = snap,
-        errorMessage = snap.error
+        viewport = finalViewport,
+        errorMessage = finalViewport.error
     )
     saveCurrentWorkbookToSessionList()
     return true

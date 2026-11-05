@@ -173,8 +173,8 @@ fun MasuSheetNativeFormulaBar(
     onCancelFormula: () -> Unit,
     onOpenFunctionWizard: () -> Unit = {},
     onNavigateToAddress: (String) -> Unit = {},
-    isTouchRangeSelectMode: Boolean = false,
-    onToggleTouchRangeSelectMode: () -> Unit = {}
+    isRibbonVisible: Boolean = true,
+    onToggleRibbonClick: () -> Unit = {}
 ) {
     val isEn = LocalAppLanguage.current == "en"
     val isM3 = LocalMaterial3Ui.current
@@ -253,14 +253,14 @@ fun MasuSheetNativeFormulaBar(
                 )
             }
 
-            // [EN] 1-tap Touch Range Select mode toggle for smartphones & tablets (1-stroke cell range drag anywhere)
-            // [JA] スマートフォン・タブレット向けワンストローク範囲選択モードの1タップ切替チップ
+            // [EN] Always-visible 1-tap toggle to hide or show the entire Ribbon (maximizes grid height on smartphones/tablets)
+            // [JA] リボン全体（上部バー・タブバー・コマンド群）を1タップで表示／非表示切り替えできる常時表示チップ
             Box(
                 modifier = Modifier
-                    .testTag("ms_btn_formula_touch_select")
+                    .testTag(if (isRibbonVisible) "ms_btn_formula_ribbon_toggle" else "ms_btn_expand")
                     .clip(RoundedCornerShape(boxRadius))
                     .background(
-                        if (isTouchRangeSelectMode) {
+                        if (!isRibbonVisible) {
                             if (isDarkTheme) Color(0xFF14532D) else Color(0xFFDCFCE7)
                         } else {
                             if (isDarkTheme) Color(0xFF1E293B) else Color(0xFFF3F2F1)
@@ -268,26 +268,26 @@ fun MasuSheetNativeFormulaBar(
                     )
                     .border(
                         1.dp,
-                        if (isTouchRangeSelectMode) Color(0xFF1F9D55) else borderCol,
+                        if (!isRibbonVisible) Color(0xFF1F9D55) else borderCol,
                         RoundedCornerShape(boxRadius)
                     )
-                    .clickable(onClick = onToggleTouchRangeSelectMode)
+                    .clickable(onClick = onToggleRibbonClick)
                     .padding(horizontal = 7.dp, vertical = 3.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = if (isTouchRangeSelectMode) {
-                        if (isEn) "👆 Select:ON" else "👆 範囲選択:ON"
+                    text = if (isRibbonVisible) {
+                        if (isEn) "▲ Ribbon" else "▲ リボン"
                     } else {
-                        if (isEn) "👆 Select" else "👆 範囲選択"
+                        if (isEn) "▼ Show Ribbon" else "▼ リボン表示"
                     },
-                    color = if (isTouchRangeSelectMode) {
+                    color = if (!isRibbonVisible) {
                         if (isDarkTheme) Color(0xFF4ADE80) else Color(0xFF166534)
                     } else {
                         textPrimary
                     },
                     fontSize = 11.sp,
-                    fontWeight = if (isTouchRangeSelectMode) FontWeight.Bold else FontWeight.Medium
+                    fontWeight = if (!isRibbonVisible) FontWeight.Bold else FontWeight.Medium
                 )
             }
 

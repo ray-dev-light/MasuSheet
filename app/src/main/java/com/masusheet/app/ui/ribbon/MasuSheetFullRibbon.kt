@@ -204,7 +204,6 @@ fun MasuSheetFullRibbon(
     onResetObjectAspectRatio: () -> Unit = {},
     onOpenZoomDialogClick: () -> Unit = {},
     onEditSelectedObjectInPlace: () -> Unit = {},
-    onToggleTouchRangeSelectMode: () -> Unit = {},
     onOpenColorPicker: (String) -> Unit = {},
     onOpenFunctionWizard: () -> Unit = {},
     onOpenMacroStudio: () -> Unit = {},
@@ -247,143 +246,130 @@ fun MasuSheetFullRibbon(
             }
         }
 
-        // Row 1: Top Workbook Title Bar + Quick File Actions & AI / Macro / Color Center (Fixed 34.dp height)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(34.dp)
-                .testTag("ms_toolbar_row")
-                .background(surfaceHeader)
-                .border(width = 0.5.dp, color = borderCol)
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val saveBadge = SpreadsheetI18n.t(if (state.isDirty) "● 未保存変更あり" else "✓ シート反映済", isEn)
-            MasuSheetPillButton(
-                label = "📊 ${state.workbookTitle} ($saveBadge)",
-                highlight = state.activeRibbonTab == "file",
-                tag = "ms_btn_title",
-                onClick = { onSelectTab("file") }
-            )
+        // [EN] Entire Ribbon (Top Action Bar + Open Workbooks Bar + 15-Tab Strip + Command Card) collapses/expands cleanly
+        // [JA] リボン全体（上部クイックバー・ブック切替バー・15タブバー・コマンドカード）を一括で表示／非表示切り替え
+        AnimatedVisibility(visible = state.toolbarVisible) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Row 1: Top Workbook Title Bar + Quick File Actions & AI / Macro / Color Center (Fixed 34.dp height)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(34.dp)
+                        .testTag("ms_toolbar_row")
+                        .background(surfaceHeader)
+                        .border(width = 0.5.dp, color = borderCol)
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val saveBadge = SpreadsheetI18n.t(if (state.isDirty) "● 未保存変更あり" else "✓ シート反映済", isEn)
+                    MasuSheetPillButton(
+                        label = "📊 ${state.workbookTitle} ($saveBadge)",
+                        highlight = state.activeRibbonTab == "file",
+                        tag = "ms_btn_title",
+                        onClick = { onSelectTab("file") }
+                    )
 
-            MasuSheetPillButton(
-                label = "📄 新規ブック",
-                tag = "ms_btn_new_blank",
-                onClick = onNewBlankWorkbookClick
-            )
-            MasuSheetPillButton(
-                label = "📂 開く",
-                tag = "ms_btn_open",
-                onClick = onOpenDocumentClick
-            )
-            MasuSheetPillButton(
-                label = "🪟 別ウィンドウ",
-                tag = "ms_btn_new_window",
-                onClick = { onOpenNewWindowClick(false) }
-            )
-            if (isSecondaryWindow) {
-                MasuSheetPillButton(
-                    label = if (isEn) "📥 Merge into Main Window" else "📥 元のウィンドウへ戻す",
-                    highlight = true,
-                    tag = "ms_btn_merge_window",
-                    onClick = { onMergeWorkbookToMainWindowClick(state.activeWorkbookId) }
-                )
-            }
-            MasuSheetPillButton(
-                label = "💾 ファイル保存",
-                highlight = state.isSaveDialogVisible,
-                tag = "ms_btn_save",
-                onClick = onSaveClick
-            )
-            MasuSheetPillButton(
-                label = "📄 PDF出力",
-                tag = "ms_btn_pdf",
-                onClick = onExportPdfClick
-            )
-            MasuSheetPillButton(
-                label = "↶ 元に戻す",
-                tag = "ms_btn_undo",
-                onClick = { onCommand("edit.undo", "{}") }
-            )
-            MasuSheetPillButton(
-                label = "↷ やり直し",
-                tag = "ms_btn_redo",
-                onClick = { onCommand("edit.redo", "{}") }
-            )
-            MasuSheetPillButton(
-                label = if (state.isTouchRangeSelectMode) {
-                    if (isEn) "👆 Range Select:ON" else "👆 範囲選択:ON"
-                } else {
-                    if (isEn) "👆 Range Select" else "👆 範囲選択"
-                },
-                highlight = state.isTouchRangeSelectMode,
-                tag = "ms_btn_touch_range_select",
-                onClick = onToggleTouchRangeSelectMode
-            )
-            MasuSheetPillButton(
-                label = if (state.isAiPanelOpen) "✨ AI アシスタント:ON" else "✨ AI アシスタント",
-                highlight = state.isAiPanelOpen,
-                tag = "ms_btn_ai_toggle",
-                onClick = onToggleAiPanel
-            )
-            MasuSheetPillButton(
-                label = if (state.isMacroRecording) "⏹️ マクロ停止(${state.currentRecordingSteps.size})" else "🤖 マクロ・VBA",
-                highlight = state.isMacroRecording,
-                tag = "ms_btn_macro_studio",
-                onClick = onOpenMacroStudio
-            )
-            MasuSheetPillButton(
-                label = "🎨 フル色パレット",
-                tag = "ms_btn_color_picker",
-                onClick = { onOpenColorPicker("fill") }
-            )
-            MasuSheetPillButton(
-                label = "fx 関数(523)",
-                tag = "ms_btn_fx_wizard",
-                onClick = onOpenFunctionWizard
-            )
-            MasuSheetPillButton(
-                label = "🧭 全292コマンド",
-                tag = "ms_btn_cmd_center",
-                onClick = { onOpenCommandCenter("catalog") }
-            )
-            MasuSheetPillButton(
-                label = if (state.language == "ja") "🇯🇵 日本語" else "🇺🇸 EN",
-                tag = "ms_btn_lang",
-                onClick = onToggleLanguageClick
-            )
-            MasuSheetPillButton(
-                label = if (state.isMaterial3Ui) "🎨 現在:M3 UI (切替)" else "📊 現在:クラシックUI (切替)",
-                highlight = state.isMaterial3Ui,
-                tag = "ms_btn_m3_ui",
-                onClick = onToggleMaterial3UiClick
-            )
-            MasuSheetPillButton(
-                label = if (state.isDarkTheme) "🌙 ダーク" else "☀️ ライト",
-                tag = "ms_btn_theme",
-                onClick = onToggleThemeClick
-            )
-            MasuSheetPillButton(
-                label = "🔍 ${state.zoomPercent}%",
-                tag = "ms_btn_zoom",
-                onClick = onCycleZoomClick
-            )
-            if (state.toolbarVisible) {
-                MasuSheetPillButton(
-                    label = "▲ リボン隠す",
-                    tag = "ms_btn_collapse",
-                    onClick = onToggleToolbarClick
-                )
-            } else {
-                MasuSheetPillButton(
-                    label = "▼ リボン表示",
-                    tag = "ms_btn_expand",
-                    onClick = onToggleToolbarClick
-                )
-            }
-        }
+                    MasuSheetPillButton(
+                        label = "▲ リボン隠す",
+                        tag = "ms_btn_collapse",
+                        onClick = onToggleToolbarClick
+                    )
+
+                    MasuSheetPillButton(
+                        label = "📄 新規ブック",
+                        tag = "ms_btn_new_blank",
+                        onClick = onNewBlankWorkbookClick
+                    )
+                    MasuSheetPillButton(
+                        label = "📂 開く",
+                        tag = "ms_btn_open",
+                        onClick = onOpenDocumentClick
+                    )
+                    MasuSheetPillButton(
+                        label = "🪟 別ウィンドウ",
+                        tag = "ms_btn_new_window",
+                        onClick = { onOpenNewWindowClick(false) }
+                    )
+                    if (isSecondaryWindow) {
+                        MasuSheetPillButton(
+                            label = if (isEn) "📥 Merge into Main Window" else "📥 元のウィンドウへ戻す",
+                            highlight = true,
+                            tag = "ms_btn_merge_window",
+                            onClick = { onMergeWorkbookToMainWindowClick(state.activeWorkbookId) }
+                        )
+                    }
+                    MasuSheetPillButton(
+                        label = "💾 ファイル保存",
+                        highlight = state.isSaveDialogVisible,
+                        tag = "ms_btn_save",
+                        onClick = onSaveClick
+                    )
+                    MasuSheetPillButton(
+                        label = "📄 PDF出力",
+                        tag = "ms_btn_pdf",
+                        onClick = onExportPdfClick
+                    )
+                    MasuSheetPillButton(
+                        label = "↶ 元に戻す",
+                        tag = "ms_btn_undo",
+                        onClick = { onCommand("edit.undo", "{}") }
+                    )
+                    MasuSheetPillButton(
+                        label = "↷ やり直し",
+                        tag = "ms_btn_redo",
+                        onClick = { onCommand("edit.redo", "{}") }
+                    )
+                    MasuSheetPillButton(
+                        label = if (state.isAiPanelOpen) "✨ AI アシスタント:ON" else "✨ AI アシスタント",
+                        highlight = state.isAiPanelOpen,
+                        tag = "ms_btn_ai_toggle",
+                        onClick = onToggleAiPanel
+                    )
+                    MasuSheetPillButton(
+                        label = if (state.isMacroRecording) "⏹️ マクロ停止(${state.currentRecordingSteps.size})" else "🤖 マクロ・VBA",
+                        highlight = state.isMacroRecording,
+                        tag = "ms_btn_macro_studio",
+                        onClick = onOpenMacroStudio
+                    )
+                    MasuSheetPillButton(
+                        label = "🎨 フル色パレット",
+                        tag = "ms_btn_color_picker",
+                        onClick = { onOpenColorPicker("fill") }
+                    )
+                    MasuSheetPillButton(
+                        label = "fx 関数(523)",
+                        tag = "ms_btn_fx_wizard",
+                        onClick = onOpenFunctionWizard
+                    )
+                    MasuSheetPillButton(
+                        label = "🧭 全292コマンド",
+                        tag = "ms_btn_cmd_center",
+                        onClick = { onOpenCommandCenter("catalog") }
+                    )
+                    MasuSheetPillButton(
+                        label = if (state.language == "ja") "🇯🇵 日本語" else "🇺🇸 EN",
+                        tag = "ms_btn_lang",
+                        onClick = onToggleLanguageClick
+                    )
+                    MasuSheetPillButton(
+                        label = if (state.isMaterial3Ui) "🎨 現在:M3 UI (切替)" else "📊 現在:クラシックUI (切替)",
+                        highlight = state.isMaterial3Ui,
+                        tag = "ms_btn_m3_ui",
+                        onClick = onToggleMaterial3UiClick
+                    )
+                    MasuSheetPillButton(
+                        label = if (state.isDarkTheme) "🌙 ダーク" else "☀️ ライト",
+                        tag = "ms_btn_theme",
+                        onClick = onToggleThemeClick
+                    )
+                    MasuSheetPillButton(
+                        label = "🔍 ${state.zoomPercent}%",
+                        tag = "ms_btn_zoom",
+                        onClick = onCycleZoomClick
+                    )
+                }
 
         // Row 1b: Open Workbooks Switcher Bar (`📚 開いているブック切替バー`) — appears whenever 2+ workbooks are open OR in SecondaryWorkbookActivity.
         // [EN] Supports:
@@ -655,13 +641,12 @@ fun MasuSheetFullRibbon(
         }
 
         // Row 3: Authentic Office 365 / Windows 11 Spreadsheet Grouped Multi-Row Ribbon Card (heightIn(min = 82.dp) — Zero vertical clipping!)
-        AnimatedVisibility(visible = state.toolbarVisible) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(surfaceHeader)
-                    .padding(horizontal = 6.dp, vertical = 3.dp)
-            ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(surfaceHeader)
+                .padding(horizontal = 6.dp, vertical = 3.dp)
+        ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2072,6 +2057,7 @@ fun MasuSheetFullRibbon(
                     }
                 }
             }
+        }
         }
     }
 }

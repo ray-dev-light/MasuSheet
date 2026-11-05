@@ -49,6 +49,8 @@ interface NativeEngineGateway {
     fun executeCommand(commandId: String, paramsJson: String = "{}"): NativeViewportSnapshot
     fun getViewport(maxRow: Int = 120, maxCol: Int = 45): NativeViewportSnapshot
     fun readSheetCells(sheetIndex: Int, maxRows: Int = 5000, maxCols: Int = 256): Map<Long, NativeCellModel> = emptyMap()
+    fun syncWorkbookObjects(objects: List<NativeSheetObject>) {}
+    fun readWorkbookObjects(): List<NativeSheetObject> = emptyList()
 }
 
 /**
@@ -213,5 +215,151 @@ class RustJniEngineGateway : NativeEngineGateway {
             }
             out
         }.getOrDefault(emptyMap())
+    }
+
+    override fun syncWorkbookObjects(objects: List<NativeSheetObject>) {
+        if (!MasuSheetNativeBridge.isNativeLoaded) return
+        runCatching {
+            val arr = JSONArray()
+            for (obj in objects) {
+                val o = JSONObject()
+                    .put("id", obj.id)
+                    .put("sheetIndex", obj.sheetIndex)
+                    .put("kind", obj.kind.name)
+                    .put("subType", obj.subType)
+                    .put("xPt", obj.xPt.toDouble())
+                    .put("yPt", obj.yPt.toDouble())
+                    .put("widthPt", obj.widthPt.toDouble())
+                    .put("heightPt", obj.heightPt.toDouble())
+                    .put("title", obj.title)
+                    .put("text", obj.text)
+                    .put("fillColor", obj.fillColor)
+                    .put("strokeColor", obj.strokeColor)
+                    .put("strokeWidthPt", obj.strokeWidthPt.toDouble())
+                    .put("sourceRangeText", obj.sourceRangeText)
+                    .put("chartLabels", JSONArray(obj.chartLabels))
+                    .put("chartValues", JSONArray(obj.chartValues.map { it.toDouble() }))
+                if (obj.imageBytes != null && obj.imageBytes.isNotEmpty()) {
+                    o.put("imageBase64", Base64.getEncoder().encodeToString(obj.imageBytes))
+                }
+                val seriesArr = JSONArray()
+                for (s in obj.chartSeries) {
+                    seriesArr.put(
+                        JSONObject()
+                            .put("name", s.name)
+                            .put("values", JSONArray(s.values.map { it.toDouble() }))
+                            .put("color", s.color)
+                            .put("nameCellRef", s.nameCellRef)
+                            .put("xRangeText", s.xRangeText)
+                            .put("yRangeText", s.yRangeText)
+                            .put("xLabels", JSONArray(s.xLabels))
+                    )
+                }
+                o.put("chartSeries", seriesArr)
+                arr.put(o)
+            }
+            val payload = JSONObject().put("objects", arr).toString()
+            if (currentSessionId > 0L) {
+                MasuSheetNativeBridge.nativeExecuteCommandSession(currentSessionId, "jni.syncWorkbookObjects", payload)
+            } else {
+                MasuSheetNativeBridge.nativeExecuteCommand("jni.syncWorkbookObjects", payload)
+            }
+        }
+    }
+
+    override fun readWorkbookObjects(): List<NativeSheetObject> {
+        if (!MasuSheetNativeBridge.isNativeLoaded) return emptyList()
+        return runCatching {
+            val raw = if (currentSessionId > 0L) {
+                MasuSheetNativeBridge.nativeExecuteCommandSession(currentSessionId, "jni.readWorkbookObjects", "{}")
+            } else {
+                MasuSheetNativeBridge.nativeExecuteCommand("jni.readWorkbookObjects", "{}")
+            }
+            val snapObj = JSONObject(raw)
+            val resObj = snapObj.optJSONObject("result")
+                ?: snapObj.optString("resultJson", "").takeIf { it.isNotBlank() }?.let { JSONObject(it) }
+                ?: return emptyList()
+            val arr = resObj.optJSONArray("objects") ?: return emptyList()
+            val out = ArrayList<NativeSheetObject>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val kind = runCatching { SheetObjectKind.valueOf(o.optString("kind", "SHAPE")) }
+                    .getOrDefault(SheetObjectKind.SHAPE)
+                val labelsArr = o.optJSONArray("chartLabels")
+                val labels = if (labelsArr != null) {
+                    List(labelsArr.length()) { idx -> labelsArr.optString(idx, "") }
+                } else {
+                    emptyList()
+                }
+                val valsArr = o.optJSONArray("chartValues")
+                val vals = if (valsArr != null) {
+                    List(valsArr.length()) { idx -> valsArr.optDouble(idx, 0.0).toFloat() }
+                } else {
+                    emptyList()
+                }
+                val seriesJsonArr = o.optJSONArray("chartSeries")
+                val seriesList = if (seriesJsonArr != null) {
+                    buildList {
+                        for (si in 0 until seriesJsonArr.length()) {
+                            val sj = seriesJsonArr.optJSONObject(si) ?: continue
+                            val svArr = sj.optJSONArray("values")
+                            val sv = if (svArr != null) {
+                                List(svArr.length()) { k -> svArr.optDouble(k, 0.0).toFloat() }
+                            } else {
+                                emptyList()
+                            }
+                            val sxArr = sj.optJSONArray("xLabels")
+                            val sx = if (sxArr != null) {
+                                List(sxArr.length()) { k -> sxArr.optString(k, "") }
+                            } else {
+                                emptyList()
+                            }
+                            add(
+                                ChartSeries(
+                                    name = sj.optString("name", "Series ${si + 1}"),
+                                    values = sv,
+                                    color = sj.optInt("color", 0),
+                                    nameCellRef = sj.optString("nameCellRef", ""),
+                                    xRangeText = sj.optString("xRangeText", ""),
+                                    yRangeText = sj.optString("yRangeText", ""),
+                                    xLabels = sx
+                                )
+                            )
+                        }
+                    }
+                } else {
+                    emptyList()
+                }
+                val imgB64 = o.optString("imageBase64", "")
+                val imgBytes = if (imgB64.isNotBlank()) {
+                    runCatching { Base64.getDecoder().decode(imgB64) }.getOrNull()
+                } else {
+                    null
+                }
+                out.add(
+                    NativeSheetObject(
+                        id = o.optString("id", "ooxml_obj_$i"),
+                        sheetIndex = o.optInt("sheetIndex", 0),
+                        kind = kind,
+                        subType = o.optString("subType", "column"),
+                        xPt = o.optDouble("xPt", 80.0).toFloat(),
+                        yPt = o.optDouble("yPt", 60.0).toFloat(),
+                        widthPt = o.optDouble("widthPt", 240.0).toFloat(),
+                        heightPt = o.optDouble("heightPt", 160.0).toFloat(),
+                        title = o.optString("title", ""),
+                        text = o.optString("text", ""),
+                        fillColor = o.optInt("fillColor", 0xFF1F9D55.toInt()),
+                        strokeColor = o.optInt("strokeColor", 0xFF163828.toInt()),
+                        strokeWidthPt = o.optDouble("strokeWidthPt", 1.5).toFloat(),
+                        imageBytes = imgBytes,
+                        chartLabels = labels,
+                        chartValues = vals,
+                        chartSeries = seriesList,
+                        sourceRangeText = o.optString("sourceRangeText", "")
+                    )
+                )
+            }
+            out
+        }.getOrDefault(emptyList())
     }
 }

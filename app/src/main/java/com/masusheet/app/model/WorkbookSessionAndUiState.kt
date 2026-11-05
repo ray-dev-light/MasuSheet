@@ -559,7 +559,6 @@ data class MasuSheetUiState(
     val activeRibbonTab: String = "home",
     val toolbarVisible: Boolean = true,
     val formulaBarVisible: Boolean = true,
-    val isTouchRangeSelectMode: Boolean = false,
     // Spreadsheet View, Page Layout, Formulas, Data, Review, Table & Pivot Toggle/Mode States
     val showGridlines: Boolean = true,
     val showHeadings: Boolean = true,

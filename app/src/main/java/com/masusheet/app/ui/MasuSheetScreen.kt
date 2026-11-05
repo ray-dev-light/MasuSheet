@@ -631,10 +631,6 @@ fun MasuSheetScreen(
                             sheetContainerRef?.openInObjectEditorForSelected(selectedObj)
                         }
                     },
-                    onToggleTouchRangeSelectMode = {
-                        commitActiveInCellEditIfNeeded()
-                        viewModel.onToggleTouchRangeSelectMode()
-                    },
                     onOpenColorPicker = { target ->
                         commitActiveInCellEditIfNeeded()
                         showColorPickerTarget = target
@@ -764,12 +760,42 @@ fun MasuSheetScreen(
                             commitActiveInCellEditIfNeeded()
                             viewModel.onNavigateToAddressOrRange(addrText)
                         },
-                        isTouchRangeSelectMode = state.isTouchRangeSelectMode,
-                        onToggleTouchRangeSelectMode = {
+                        isRibbonVisible = state.toolbarVisible,
+                        onToggleRibbonClick = {
                             commitActiveInCellEditIfNeeded()
-                            viewModel.onToggleTouchRangeSelectMode()
+                            viewModel.onToggleToolbar()
                         }
                     )
+                }
+
+                // Fallback minimal restore strip when BOTH Ribbon and Formula Bar are hidden
+                if (!state.toolbarVisible && !state.formulaBarVisible) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(28.dp)
+                            .background(surfaceHeader)
+                            .border(width = 0.5.dp, color = borderCol)
+                            .padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        MasuSheetPillButton(
+                            label = "▼ リボン表示",
+                            highlight = true,
+                            tag = "ms_btn_expand",
+                            onClick = {
+                                commitActiveInCellEditIfNeeded()
+                                viewModel.onToggleToolbar()
+                            }
+                        )
+                        Text(
+                            text = "📊 ${state.workbookTitle}",
+                            color = textPrimary,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
 
                 // 3. Main Workspace Row: Spreadsheet Canvas (left) + Optional Split Book View + AI Spreadsheet Assistant Panel (right when open)

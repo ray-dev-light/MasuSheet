@@ -749,12 +749,12 @@ class MasuSheetTest {
         container.openInObjectEditorForSelected(vm.uiState.value.sheetObjects.last())
         container.commitAndCloseInCellEditor()
 
-        // 4. Touch range selection mode toggle
-        assertFalse(vm.uiState.value.isTouchRangeSelectMode)
-        vm.onToggleTouchRangeSelectMode()
-        assertTrue(vm.uiState.value.isTouchRangeSelectMode)
-        vm.onToggleTouchRangeSelectMode()
-        assertFalse(vm.uiState.value.isTouchRangeSelectMode)
+        // 4. Full ribbon show/hide toggle
+        assertTrue(vm.uiState.value.toolbarVisible)
+        vm.onToggleToolbar()
+        assertFalse(vm.uiState.value.toolbarVisible)
+        vm.onToggleToolbar()
+        assertTrue(vm.uiState.value.toolbarVisible)
 
         // 5. Screenshot / Clipboard image detection & attachment
         val pngHeader = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0)

@@ -697,6 +697,9 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                 }
 
                 // 5b. Check if user clicked an inserted Sheet Object (Shape / TextBox / Image / Chart)
+                val isFingerTouch = event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER && !isMouse
+                val isPickingChartRange = viewModel.uiState.value.chartRangePickingObjectId != null
+                val hadObjectSelection = (selectedObjectId != null || selectedObjectIds.isNotEmpty()) && !isPickingChartRange
                 val hitPair = findSheetObjectAt(event.x, event.y)
                 if (hitPair != null) {
                     val (hitObj, hitPart) = hitPair
@@ -796,7 +799,13 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                         invalidate()
                         return true
                     }
-                    viewModel.onSelectSheetObject(null)
+                    // [EN] On finger touch, keep the chart/image/shape selected on ACTION_DOWN so 1-finger swipe scrolls
+                    //      the sheet while preserving object selection; only deselect on ACTION_UP if tapped without scrolling.
+                    // [JA] 指タッチ時は ACTION_DOWN で即座に選択解除せず、グラフや画像を選択したままスワイプでシートをスクロール可能に維持
+                    //      （スクロールせずそのまま指を離したタップ時のみセル選択へ切り替え）。
+                    if (!isFingerTouch || isPickingChartRange) {
+                        viewModel.onSelectSheetObject(null)
+                    }
                 }
 
                 // If in-cell editor is open (not in Formula Point Mode), commit it first automatically!
@@ -819,7 +828,6 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                     }
                 }
 
-                val isFingerTouch = event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER && !isMouse
                 val eventNowMs = event.eventTime.takeIf { it > 0L } ?: System.currentTimeMillis()
                 val isDoubleClick = (anchorR == lastClickRow && anchorC == lastClickCol && (eventNowMs - lastClickTimeMs) in 0L..400L)
                 lastClickRow = anchorR
@@ -866,26 +874,26 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                 }
 
                 // [EN] Smart Touch vs Pointer Range Selection:
-                //  - Mouse, Stylus (S-Pen), or Touch Range Select Mode (`isTouchRangeSelectMode == true`):
-                //    1-stroke drag on any cell immediately selects a 2D cell range.
-                //  - Default Finger Touch (`isTouchRangeSelectMode == false`):
-                //    1) Pressing inside the currently selected cell/range and dragging immediately expands/adjusts
-                //       the 2D cell selection (matching desktop mouse drag from the middle of a cell!).
-                //    2) Swiping on unselected cells scrolls the sheet smoothly without overwriting the current selection;
-                //       lifting without scrolling selects the tapped cell cleanly on ACTION_UP.
+                //  - Mouse or Stylus (S-Pen): 1-stroke drag on any cell immediately selects a 2D cell range.
+                //  - Finger Touch:
+                //    1) When no floating object (chart/image/shape) is selected, pressing inside the currently selected
+                //       cell/range and dragging immediately expands/adjusts the 2D cell selection.
+                //    2) Swiping on unselected cells — OR swiping anywhere outside a selected chart/image/shape — scrolls
+                //       the sheet smoothly while keeping the current cell or object selection intact; lifting without
+                //       scrolling selects the tapped cell cleanly on ACTION_UP.
                 // [JA] スマートフォン・タブレットとマウス/ペンの最適共存設計：
-                //  - マウス・スタイラス（Sペン）・範囲選択モードON時：どのセルの中央からでも1ストロークで範囲選択。
-                //  - 通常の指タッチ時：選択中セル（または選択範囲内）を押してドラッグするとそのまま範囲選択が広がり、
-                //    未選択エリアをスワイプしたときは選択を崩さず滑らかにスクロール（タップ時は離した瞬間にそのセルを選択）。
+                //  - マウス・スタイラス（Sペン）時：どのセルの中央からでも1ストロークで範囲選択。
+                //  - 指タッチ時：オブジェクト未選択中に選択中セル（または選択範囲内）を押してドラッグすると範囲選択が広がり、
+                //    未選択セルやグラフ・画像選択中のシート上スワイプでは選択状態を維持したまま滑らかにスクロール（タップ時は離した瞬間にそのセルを選択）。
                 val prevSnap = currentViewport
                 val prevR0 = min(prevSnap.selStartRow, prevSnap.selEndRow)
                 val prevR1 = max(prevSnap.selStartRow, prevSnap.selEndRow)
                 val prevC0 = min(prevSnap.selStartCol, prevSnap.selEndCol)
                 val prevC1 = max(prevSnap.selStartCol, prevSnap.selEndCol)
-                val isInsideCurrentSelection = anchorR in prevR0..prevR1 && anchorC in prevC0..prevC1
+                val isInsideCurrentSelection = !hadObjectSelection && anchorR in prevR0..prevR1 && anchorC in prevC0..prevC1
                 val isMultiCellSelection = prevR0 != prevR1 || prevC0 != prevC1
 
-                if (!isFingerTouch || isTouchRangeSelectMode) {
+                if (!isFingerTouch) {
                     dragAnchorRow = anchorR
                     dragAnchorCol = anchorC
                     isDraggingRangeSelection = event.pointerCount == 1
@@ -926,6 +934,7 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
         MotionEvent.ACTION_POINTER_DOWN -> {
             if (event.pointerCount >= 2) {
                 scroller.forceFinished(true)
+                cancelPendingObjectDragKeepSelection()
                 isDraggingFillHandle = false
                 isDraggingSelectionMove = false
                 isDraggingChartAxisRangeMove = false
@@ -966,9 +975,77 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
         }
 
         MotionEvent.ACTION_MOVE -> {
+            // [EN] Touch-screen (and multi-pointer trackpad) two-finger pinch-to-zoom + simultaneous two-finger pan
+            //      Runs before 1-finger object drag so 2 fingers placed on top of a large chart/image scroll/zoom cleanly while keeping it selected!
+            // [JA] タッチ画面での2本指ピンチズーム＆2本指パン操作（大きなグラフや画像の上に2本指を置いても、オブジェクトを選択したままスクロール／ズーム可能）
+            if (event.pointerCount >= 2) {
+                cancelPendingObjectDragKeepSelection()
+                isDraggingFillHandle = false
+                isDraggingSelectionMove = false
+                isDraggingChartAxisRangeMove = false
+                isDraggingColMove = false
+                isDraggingFreezeRowHandle = false
+                isDraggingFreezeColHandle = false
+                isDraggingRangeSelection = false
+                isDraggingColHeaderSelection = false
+                isDraggingRowHeaderSelection = false
+                isDraggingFormulaPointRange = false
+                isDraggingFormulaPointCol = false
+                isDraggingFormulaPointRow = false
+                val span = hypot(event.getX(1) - event.getX(0), event.getY(1) - event.getY(0))
+                val focusX = (event.getX(0) + event.getX(1)) * 0.5f
+                val focusY = (event.getY(0) + event.getY(1)) * 0.5f
+                if (lastTwoFingerSpanPx <= 0f) {
+                    initialTwoFingerSpanPx = span
+                    lastTwoFingerSpanPx = span
+                    pinchAccumulatedZoom = zoomPercent.toFloat()
+                }
+                if (!isPinchZooming && abs(span - initialTwoFingerSpanPx) > 4f * density) {
+                    isPinchZooming = true
+                }
+                if (isPinchZooming && lastTwoFingerSpanPx > 10f * density && span > 10f * density) {
+                    val factor = (span / lastTwoFingerSpanPx).coerceIn(0.80f, 1.25f)
+                    lastTwoFingerSpanPx = span
+                    applyPinchScaleFactor(factor, focusX, focusY)
+                } else {
+                    isPanningTouch = true
+                    val stepX = (lastTouchX - focusX).roundToInt()
+                    val stepY = (lastTouchY - focusY).roundToInt()
+                    scrollXPx = (scrollXPx + stepX).coerceIn(0, maxScrollXPx())
+                    scrollYPx = (scrollYPx + stepY).coerceIn(0, maxScrollYPx())
+                    if (container.isEditingInCell) container.updateInCellEditorBounds()
+                    invalidate()
+                }
+                lastTouchX = focusX
+                lastTouchY = focusY
+                return true
+            }
+
             // Live Sheet Object Drag, 8-Direction Resize (4 Corners + Top/Bottom/Left/Right up to 5000x5000pt), or Top-Handle Rotation
             val activeObjId = draggingObjectId
-            if (activeObjId != null) {
+            if (activeObjId != null && event.pointerCount == 1) {
+                if (!isRotatingObject && hasMovedSinceDown) {
+                    val edgeZonePx = 28f * density
+                    val maxAutoStepPx = (14f * density).roundToInt().coerceAtLeast(2)
+                    if (width > rowHeaderWidthPx + edgeZonePx * 2f) {
+                        val prevScrollX = scrollXPx
+                        if (event.x > width - edgeZonePx) {
+                            scrollXPx = (scrollXPx + maxAutoStepPx).coerceIn(0, maxScrollXPx())
+                        } else if (event.x in rowHeaderWidthPx..(rowHeaderWidthPx + edgeZonePx) && scrollXPx > 0) {
+                            scrollXPx = (scrollXPx - maxAutoStepPx).coerceIn(0, maxScrollXPx())
+                        }
+                        objectDragStartScreenX -= (scrollXPx - prevScrollX).toFloat()
+                    }
+                    if (height > colHeaderHeightPx + edgeZonePx * 2f) {
+                        val prevScrollY = scrollYPx
+                        if (event.y > height - edgeZonePx) {
+                            scrollYPx = (scrollYPx + maxAutoStepPx).coerceIn(0, maxScrollYPx())
+                        } else if (event.y in colHeaderHeightPx..(colHeaderHeightPx + edgeZonePx) && scrollYPx > 0) {
+                            scrollYPx = (scrollYPx - maxAutoStepPx).coerceIn(0, maxScrollYPx())
+                        }
+                        objectDragStartScreenY -= (scrollYPx - prevScrollY).toFloat()
+                    }
+                }
                 val dxPt = pxToPt(event.x - objectDragStartScreenX)
                 val dyPt = pxToPt(event.y - objectDragStartScreenY)
                 val isMultiMove = !isRotatingObject &&
@@ -1067,50 +1144,6 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
                     currentViewport = currentViewport.withUpdatedRowHeight(resizingRowIndex, newHeightPt)
                     invalidate()
                 }
-                return true
-            }
-
-            // [EN] Touch-screen (and multi-pointer trackpad) two-finger pinch-to-zoom + simultaneous two-finger pan
-            // [JA] タッチ画面（およびマルチタッチ対応トラックパッド）での2本指ピンチズーム＆2本指パン操作
-            if (event.pointerCount >= 2) {
-                isDraggingFillHandle = false
-                isDraggingSelectionMove = false
-                isDraggingChartAxisRangeMove = false
-                isDraggingColMove = false
-                isDraggingFreezeRowHandle = false
-                isDraggingFreezeColHandle = false
-                isDraggingRangeSelection = false
-                isDraggingColHeaderSelection = false
-                isDraggingRowHeaderSelection = false
-                isDraggingFormulaPointRange = false
-                isDraggingFormulaPointCol = false
-                isDraggingFormulaPointRow = false
-                val span = hypot(event.getX(1) - event.getX(0), event.getY(1) - event.getY(0))
-                val focusX = (event.getX(0) + event.getX(1)) * 0.5f
-                val focusY = (event.getY(0) + event.getY(1)) * 0.5f
-                if (lastTwoFingerSpanPx <= 0f) {
-                    initialTwoFingerSpanPx = span
-                    lastTwoFingerSpanPx = span
-                    pinchAccumulatedZoom = zoomPercent.toFloat()
-                }
-                if (!isPinchZooming && abs(span - initialTwoFingerSpanPx) > 4f * density) {
-                    isPinchZooming = true
-                }
-                if (isPinchZooming && lastTwoFingerSpanPx > 10f * density && span > 10f * density) {
-                    val factor = (span / lastTwoFingerSpanPx).coerceIn(0.80f, 1.25f)
-                    lastTwoFingerSpanPx = span
-                    applyPinchScaleFactor(factor, focusX, focusY)
-                } else {
-                    isPanningTouch = true
-                    val stepX = (lastTouchX - focusX).roundToInt()
-                    val stepY = (lastTouchY - focusY).roundToInt()
-                    scrollXPx = (scrollXPx + stepX).coerceIn(0, maxScrollXPx())
-                    scrollYPx = (scrollYPx + stepY).coerceIn(0, maxScrollYPx())
-                    if (container.isEditingInCell) container.updateInCellEditorBounds()
-                    invalidate()
-                }
-                lastTouchX = focusX
-                lastTouchY = focusY
                 return true
             }
 
@@ -1578,6 +1611,21 @@ internal fun MasuSheetNativeGridView.handleTouchInput(event: MotionEvent): Boole
         }
     }
     return null
+}
+
+/**
+ * [EN] Cancels an in-progress 1-finger object drag/resize/rotation when a second finger touches down
+ *      (for 2-finger scroll or pinch-zoom), restoring the object's original geometry while keeping it selected.
+ * [JA] グラフや画像上で2本指スクロール／ピンチズームを開始した際、1本目による仮ドラッグ移動を元に戻しつつ選択状態を維持します。
+ */
+private fun MasuSheetNativeGridView.cancelPendingObjectDragKeepSelection() {
+    if (draggingObjectId == null) return
+    sheetObjects = viewModel.uiState.value.sheetObjects
+    draggingObjectId = null
+    activeObjectResizePart = null
+    isRotatingObject = false
+    multiDragStartPositions = emptyMap()
+    invalidate()
 }
 
 /**
