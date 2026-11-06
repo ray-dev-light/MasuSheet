@@ -11,11 +11,11 @@ import org.json.JSONObject
 /**
  * ============================================================================
  * [EN] Sheet Tab Lifecycle, Find & Replace, GoTo Special, Goal Seek, Comments, Hyperlinks, & Defined Names
- * Manages sheet insert/delete/rename/duplicate (`M-11` cloning objects)/hide/move, Find & Replace, GoTo Special, numerical Goal Seek, cell comments, hyperlinks, and defined names.
+ * Manages sheet insert/delete/rename/duplicate (cloning objects)/hide/move, Find & Replace, GoTo Special, numerical Goal Seek, cell comments, hyperlinks, and defined names.
  *
  * ---
  * [JA / 日本語解説]
- * シートの追加・削除・名前変更・オブジェクト継承付き複製 (`M-11`)・非表示・移動、検索と置換、条件を選択してジャンプ、ゴールシーク、コメント、ハイパーリンク、名前の定義を担います。
+ * シートの追加・削除・名前変更・オブジェクト継承付き複製・非表示・移動、検索と置換、条件を選択してジャンプ、ゴールシーク、コメント、ハイパーリンク、名前の定義を担います。
  * ============================================================================
  */
 
@@ -260,7 +260,7 @@ fun MasuSheetViewModel.onRenameSheetAt(sheetIndex: Int, newName: String) {
 fun MasuSheetViewModel.onDuplicateSheetAt(sheetIndex: Int) {
     val insertPos = (sheetIndex + 1).coerceIn(0, _uiState.value.viewport.sheetNames.size)
     shiftSheetIndexedStateOnInsert(insertPos)
-    // Copy custom styles/widths/heights/merges AND floating objects/comments/links/tabColor from source sheetIndex to insertPos (`M-11`)
+    // Copy custom styles/widths/heights/merges AND floating objects/comments/links/tabColor from source sheetIndex to insertPos
     customColWidths.entries.filter { it.key.first == sheetIndex }.forEach { (k, v) -> customColWidths[insertPos to k.second] = v }
     customRowHeights.entries.filter { it.key.first == sheetIndex }.forEach { (k, v) -> customRowHeights[insertPos to k.second] = v }
     customWrapCells.entries.filter { it.key.first == sheetIndex }.forEach { (k, v) -> customWrapCells[insertPos to k.second] = v }

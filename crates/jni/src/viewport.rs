@@ -30,6 +30,17 @@ const MAX_VIEWPORT_CELLS: usize = 120_000;
 /// [JA] `jni.readSheetCells` で一括返却するセル数の安全上限です。
 const MAX_READ_SHEET_CELLS: usize = 200_000;
 
+/// [EN] Hard ceiling per metadata vector (`merges`, `comments`, `hyperlinks`, `validations`, etc.)
+///      in [`ViewportDto`] so pathological workbooks cannot trigger unbounded JNI JSON allocations.
+/// [JA] 異常に大量の結合セル・コメント・入力規則を持つブックでの JNI メモリ膨張を防ぐ各配列の安全上限です。
+const MAX_VIEWPORT_META_ITEMS: usize = 10_000;
+
+/// [EN] Saturating helper converting a JSON `u64` coordinate into `u32` without wraparound (`>= 2^32` -> `u32::MAX`).
+/// [JA] JSON の `u64` 座標値を 32 ビット切り捨てラップアラウンドを起こさずに `u32` へ飽和変換します。
+fn saturating_json_u32(v: u64) -> u32 {
+    u32::try_from(v).unwrap_or(u32::MAX)
+}
+
 /// [EN] Request parameters for [`build_viewport_dto`].
 /// [JA] [`build_viewport_dto`] への要求パラメータ構造体です。
 pub(crate) struct ViewportRequest {
@@ -209,23 +220,36 @@ fn collect_viewport_cells(
     sheet_index: usize,
     viewport_range: RangeRef,
 ) -> (Vec<[u32; 4]>, Vec<[u32; 4]>, Vec<CellDto>) {
+    let max_coord_candidates = MAX_VIEWPORT_CELLS.saturating_mul(2);
     let mut merges = Vec::new();
-    let mut cell_coords: BTreeSet<CellRef> =
-        sh.cells.iter_range(viewport_range).map(|(c, _)| c).collect();
+    let mut cell_coords: BTreeSet<CellRef> = sh
+        .cells
+        .iter_range(viewport_range)
+        .take(max_coord_candidates)
+        .map(|(c, _)| c)
+        .collect();
     for m in &sh.merges {
         if m.intersection(&viewport_range).is_some() {
-            merges.push([m.start.row, m.start.col, m.end.row, m.end.col]);
-            cell_coords.insert(m.start);
+            if merges.len() < MAX_VIEWPORT_META_ITEMS {
+                merges.push([m.start.row, m.start.col, m.end.row, m.end.col]);
+            }
+            if cell_coords.len() < max_coord_candidates {
+                cell_coords.insert(m.start);
+            }
         }
     }
 
     let mut spill_ranges = Vec::new();
     for r in sh.spill_ranges.values() {
-        if r.intersection(&viewport_range).is_some() {
+        if r.intersection(&viewport_range).is_some() && spill_ranges.len() < MAX_VIEWPORT_META_ITEMS
+        {
             spill_ranges.push([r.start.row, r.start.col, r.end.row, r.end.col]);
         }
     }
     for &c in sh.spill.keys() {
+        if cell_coords.len() >= max_coord_candidates {
+            break;
+        }
         if viewport_range.contains(c) {
             cell_coords.insert(c);
         }
@@ -250,10 +274,12 @@ fn collect_viewport_cells(
     (merges, spill_ranges, cells)
 }
 
-/// [EN] Collects comments/notes on `sh`. / [JA] シート上のコメント一覧を収集します。
+/// [EN] Collects comments/notes on `sh` (capped at [`MAX_VIEWPORT_META_ITEMS`]).
+/// [JA] シート上のコメント一覧を最大 [`MAX_VIEWPORT_META_ITEMS`] 件まで収集します。
 fn collect_comments(sh: &Sheet) -> Vec<CommentDto> {
     sh.comments
         .iter()
+        .take(MAX_VIEWPORT_META_ITEMS)
         .map(|(c, cmt)| CommentDto {
             cell: c.a1(),
             author: cmt.author.clone(),
@@ -263,10 +289,12 @@ fn collect_comments(sh: &Sheet) -> Vec<CommentDto> {
         .collect()
 }
 
-/// [EN] Collects hyperlinks on `sh`. / [JA] シート上のハイパーリンク一覧を収集します。
+/// [EN] Collects hyperlinks on `sh` (capped at [`MAX_VIEWPORT_META_ITEMS`]).
+/// [JA] シート上のハイパーリンク一覧を最大 [`MAX_VIEWPORT_META_ITEMS`] 件まで収集します。
 fn collect_hyperlinks(sh: &Sheet) -> Vec<HyperlinkDto> {
     sh.hyperlinks
         .iter()
+        .take(MAX_VIEWPORT_META_ITEMS)
         .map(|(c, h)| HyperlinkDto {
             cell: c.a1(),
             target: h.target.clone(),
@@ -281,6 +309,7 @@ fn collect_defined_names(wb: &Workbook) -> Vec<DefinedNameDto> {
     wb.names
         .iter()
         .filter(|n| !n.hidden && !n.name.starts_with("_gc_") && !n.name.starts_with("_sc_"))
+        .take(MAX_VIEWPORT_META_ITEMS)
         .map(|n| DefinedNameDto {
             name: n.name.clone(),
             refers_to: n.formula.clone(),
@@ -298,6 +327,9 @@ fn collect_sparklines(
 ) -> Vec<SparklineDto> {
     let mut out = Vec::new();
     for sp in &sh.sparklines {
+        if out.len() >= MAX_VIEWPORT_META_ITEMS {
+            break;
+        }
         if viewport_range.contains(sp.cell) {
             let values: Vec<f64> =
                 match gridcraft_engine::calc::evaluate(wb, sheet_index, sp.cell, &sp.source) {
@@ -329,6 +361,9 @@ fn collect_sparklines(
 fn collect_validations(wb: &Workbook, sh: &Sheet, sheet_index: usize) -> Vec<ValidationDto> {
     let mut out = Vec::new();
     for dv in &sh.validations {
+        if out.len() >= MAX_VIEWPORT_META_ITEMS {
+            break;
+        }
         let kind_str = match dv.kind {
             ValidationKind::Any => "any",
             ValidationKind::Whole => "whole",
@@ -345,6 +380,9 @@ fn collect_validations(wb: &Workbook, sh: &Sheet, sheet_index: usize) -> Vec<Val
             vec![]
         };
         for r in &dv.ranges {
+            if out.len() >= MAX_VIEWPORT_META_ITEMS {
+                break;
+            }
             out.push(ValidationDto {
                 range: r.a1(),
                 kind: kind_str,
@@ -378,7 +416,7 @@ pub(crate) fn read_sheet_cells_json(s: &Session, params: &Json) -> Result<Json, 
         .get("sheetIndex")
         .or_else(|| params.get("sheet"))
         .and_then(Json::as_u64)
-        .map(|v| v as usize)
+        .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
         .or_else(|| {
             params
                 .get("sheetName")
@@ -395,43 +433,47 @@ pub(crate) fn read_sheet_cells_json(s: &Session, params: &Json) -> Result<Json, 
     let r1 = params
         .get("startRow")
         .and_then(Json::as_u64)
-        .map_or(0, |v| (v as u32).min(gridcraft_core::MAX_ROWS - 1));
+        .map_or(0, |v| saturating_json_u32(v).min(gridcraft_core::MAX_ROWS - 1));
     let c1 = params
         .get("startCol")
         .and_then(Json::as_u64)
-        .map_or(0, |v| (v as u32).min(gridcraft_core::MAX_COLS - 1));
+        .map_or(0, |v| saturating_json_u32(v).min(gridcraft_core::MAX_COLS - 1));
     let r2 = params
         .get("endRow")
         .and_then(Json::as_u64)
-        .map(|v| v as u32)
+        .map(saturating_json_u32)
         .or_else(|| {
             params
                 .get("maxRows")
                 .and_then(Json::as_u64)
-                .map(|v| (v as u32).saturating_sub(1))
+                .map(|v| saturating_json_u32(v).saturating_sub(1))
         })
         .unwrap_or(default_end_r)
         .min(gridcraft_core::MAX_ROWS - 1);
     let c2 = params
         .get("endCol")
         .and_then(Json::as_u64)
-        .map(|v| v as u32)
+        .map(saturating_json_u32)
         .or_else(|| {
             params
                 .get("maxCols")
                 .and_then(Json::as_u64)
-                .map(|v| (v as u32).saturating_sub(1))
+                .map(|v| saturating_json_u32(v).saturating_sub(1))
         })
         .unwrap_or(default_end_c)
         .min(gridcraft_core::MAX_COLS - 1);
 
+    let max_coord_candidates = MAX_READ_SHEET_CELLS.saturating_mul(2);
     let mut coords: BTreeSet<CellRef> = BTreeSet::new();
     if r2 >= r1 && c2 >= c1 {
         let range = RangeRef::new(CellRef::new(r1, c1), CellRef::new(r2, c2));
-        for (cref, _) in sh.cells.iter_range(range) {
+        for (cref, _) in sh.cells.iter_range(range).take(max_coord_candidates) {
             coords.insert(cref);
         }
         for &cref in sh.spill.keys() {
+            if coords.len() >= max_coord_candidates {
+                break;
+            }
             if range.contains(cref) {
                 coords.insert(cref);
             }

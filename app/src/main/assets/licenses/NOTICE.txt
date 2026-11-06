@@ -14,8 +14,11 @@ Trademark & Non-Affiliation Notice
 - Upstream ArtCraft brand files formerly in docs/brand/ and desktop installer assets have been
   removed from this repository. MasuSheet is an independent open-source spreadsheet application
   for Android and is not affiliated with or endorsed by the ArtCraft Team.
-- Android, ChromeOS, and Googlebook are trademarks of Google LLC.
-- Microsoft, Excel, and Visual Basic are trademarks of Microsoft Corporation.
+- Android, ChromeOS, Chromebook, and Google Sheets are trademarks of Google LLC.
+- Microsoft, Excel, Visual Basic, SmartArt, WordArt, and Copilot are trademarks of the Microsoft
+  group of companies. All third-party product and feature names are referenced solely to describe
+  file-format (ECMA-376 OOXML / .xlsx) or formula/command interoperability; MasuSheet is not
+  affiliated with, sponsored by, or endorsed by Microsoft Corporation or Google LLC.
 
 Third-Party Open-Source Material
 --------------------------------
@@ -31,9 +34,9 @@ MasuSheet links or bundles third-party open-source libraries under permissive li
 
 3. Rust Calculation Core & JNI Dependencies (`libmasusheet_jni.so`)
    All linked Rust crates (including `jni`, `serde`, `serde_json`, `chrono`, `quick-xml`, `zip`,
-   `flate2`, `regex`, `rayon`, `image`, `png`, `zune-jpeg`, `aes`, `sha1`, `sha2`, `thiserror`,
-   and `unicode-ident`) are distributed under permissive open-source licenses (`MIT`,
-   `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `Zlib`, `0BSD`, `Unlicense`, and `Unicode-3.0`).
+   `flate2`, `regex`, `regex-syntax`, `image`, `png`, `zune-jpeg`, `aes`, `sha1`, `sha2`,
+   `thiserror`, and `unicode-ident`) are distributed under permissive open-source licenses (`MIT`,
+   `Apache-2.0`, `BSD-3-Clause`, `Zlib`, `0BSD`, `Unlicense`, `Unicode-DFS-2016`, and `Unicode-3.0`).
    Full per-crate copyright notices and license texts are bundled inside the Android application
    package at `assets/licenses/THIRD_PARTY_LICENSES.txt` and viewable in-app via the
    "About & Open Source Licenses" dialog.

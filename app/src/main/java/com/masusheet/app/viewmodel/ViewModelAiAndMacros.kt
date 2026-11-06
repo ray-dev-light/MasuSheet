@@ -17,12 +17,12 @@ import org.json.JSONObject
 
 /**
  * ============================================================================
- * [EN] Macro Recorder, Step-by-Step VBA Debugger, & Non-Blocking 3-Mode AI Assistant (`C-08`)
- * Handles macro recording, VBA stepping & safe rollback (`H-11`), and `Dispatchers.IO` coroutine execution (`C-08`) for Built-in Script, Web AI JSON bridge, and Cloud/Local LLM APIs.
+ * [EN] Macro Recorder, Step-by-Step VBA Debugger, & Non-Blocking 3-Mode AI Assistant
+ * Handles macro recording, VBA stepping & safe rollback, and `Dispatchers.IO` coroutine execution for Built-in Script, Web AI JSON bridge, and Cloud/Local LLM APIs.
  *
  * ---
  * [JA / 日本語解説]
- * マクロ記録、VBAステップ実行と安全なロールバック (`H-11`)、および `Dispatchers.IO` 非同期コルーチン (`C-08`) による3モードAI編集実行を担うモジュールです。
+ * マクロ記録、VBAステップ実行と安全なロールバック、および `Dispatchers.IO` 非同期コルーチン による3モードAI編集実行を担うモジュールです。
  * ============================================================================
  */
 
@@ -126,8 +126,22 @@ fun MasuSheetViewModel.onDeleteMacro(name: String) {
  * [JA] マクロのVBAステートメント（または記録ステップ）を一括実行し、一括ロールバック用に増加したUndoステップ数を記録します。
  */
 fun MasuSheetViewModel.onRunMacro(macro: MacroDefinition): String {
+    val curBefore = _uiState.value
+    val activeWbId = curBefore.activeWorkbookId
+    val preRunOverlay = captureCustomOverlaySnapshot(engineStepsCount = 0)
     val undoStackBefore = customOverlayUndoStack.size
-    val engineDepthBefore = _uiState.value.viewport.undoDepth
+    val engineDepthBefore = curBefore.viewport.undoDepth
+    val backupBytes = runCatching {
+        engineGateway.saveWorkbookBytes(MasuSheetConfig.sanitizeWorkbookFileName(curBefore.workbookTitle, "xlsx"))
+    }.getOrNull()
+    lastMacroPreRunSnapshots[activeWbId] = MasuSheetViewModel.MacroPreRunSnapshot(
+        overlay = preRunOverlay,
+        engineDepthBefore = engineDepthBefore,
+        undoStackBefore = undoStackBefore,
+        xlsxBackupBytes = backupBytes,
+        workbookTitle = curBefore.workbookTitle,
+        activeSheetIndex = curBefore.viewport.sheetIndex
+    )
     val wasRecording = _uiState.value.isMacroRecording
     if (wasRecording) {
         _uiState.value = _uiState.value.copy(isMacroRecording = false)
@@ -168,7 +182,10 @@ fun MasuSheetViewModel.onRunMacro(macro: MacroDefinition): String {
     }
     val overlayDelta = (customOverlayUndoStack.size - undoStackBefore).coerceAtLeast(0)
     val engineDelta = (_uiState.value.viewport.undoDepth - engineDepthBefore).coerceAtLeast(0)
-    val undoSteps = if (overlayDelta > 0) overlayDelta else engineDelta
+    val undoSteps = maxOf(executedOps, overlayDelta, engineDelta)
+    if (undoSteps <= 0) {
+        lastMacroPreRunSnapshots.remove(activeWbId)
+    }
     val summary = lastMsg ?: "マクロ「${macro.name}」を実行しました（$executedOps ステップ）"
     _uiState.value = _uiState.value.copy(
         lastMacroUndoSteps = undoSteps,
@@ -183,6 +200,17 @@ fun MasuSheetViewModel.onRunMacro(macro: MacroDefinition): String {
  */
 fun MasuSheetViewModel.onStartVbaDebug(macroName: String, vbaCode: String) {
     val lines = MacroStudioEngine.expandVbaStatements(vbaCode)
+    val curDbg = _uiState.value
+    lastMacroPreRunSnapshots[curDbg.activeWorkbookId] = MasuSheetViewModel.MacroPreRunSnapshot(
+        overlay = captureCustomOverlaySnapshot(engineStepsCount = 0),
+        engineDepthBefore = curDbg.viewport.undoDepth,
+        undoStackBefore = customOverlayUndoStack.size,
+        xlsxBackupBytes = runCatching {
+            engineGateway.saveWorkbookBytes(MasuSheetConfig.sanitizeWorkbookFileName(curDbg.workbookTitle, "xlsx"))
+        }.getOrNull(),
+        workbookTitle = curDbg.workbookTitle,
+        activeSheetIndex = curDbg.viewport.sheetIndex
+    )
     _uiState.value = _uiState.value.copy(
         vbaDebugState = VbaDebugState(
             isDebugging = true,
@@ -266,8 +294,10 @@ fun MasuSheetViewModel.onStopVbaDebug() {
  * [JA] 直前のマクロ一括実行またはVBAステップ実行で行われたすべてのシート変更を一括で元に戻します。
  */
 fun MasuSheetViewModel.onRollbackLastMacroRun() {
-    val steps = _uiState.value.lastMacroUndoSteps.coerceIn(0, 500)
-    if (steps <= 0) {
+    val activeWbId = _uiState.value.activeWorkbookId
+    val steps = _uiState.value.lastMacroUndoSteps.coerceIn(0, 5000)
+    val savedPreRun = lastMacroPreRunSnapshots.remove(activeWbId)
+    if (steps <= 0 && savedPreRun == null) {
         _uiState.value = _uiState.value.copy(
             lastMacroUndoSteps = 0,
             vbaDebugState = VbaDebugState(),
@@ -277,6 +307,35 @@ fun MasuSheetViewModel.onRollbackLastMacroRun() {
                 "ロールバック対象のマクロ変更はありません"
             }
         )
+        return
+    }
+    if (savedPreRun != null) {
+        val latestSnap = if (steps > 50 && savedPreRun.xlsxBackupBytes != null) {
+            engineGateway.openWorkbookBytes(savedPreRun.workbookTitle, savedPreRun.xlsxBackupBytes)
+            engineGateway.executeCommand("sheet.activate", "{\"sheet\":${savedPreRun.activeSheetIndex}}")
+        } else {
+            val engineDelta = (_uiState.value.viewport.undoDepth - savedPreRun.engineDepthBefore)
+                .coerceIn(0, 5000)
+            var snap = _uiState.value.viewport
+            repeat(engineDelta) {
+                snap = engineGateway.executeCommand("edit.undo", "{}")
+            }
+            snap
+        }
+        while (customOverlayUndoStack.size > savedPreRun.undoStackBefore.coerceAtLeast(0)) {
+            customOverlayUndoStack.removeLast()
+        }
+        customOverlayRedoStack.clear()
+        restoreCustomOverlaySnapshot(savedPreRun.overlay)
+        val decorated = decorateWithCustomSizes(latestSnap)
+        _uiState.value = _uiState.value.copy(
+            viewport = decorated,
+            isDirty = decorated.isDirty,
+            lastMacroUndoSteps = 0,
+            vbaDebugState = VbaDebugState(),
+            statusNoticeMessage = "マクロ実行前の状態にロールバック（元に戻す: $steps ステップ）しました"
+        )
+        saveCurrentWorkbookToSessionList()
         return
     }
     repeat(steps) {
@@ -296,7 +355,7 @@ fun MasuSheetViewModel.onRollbackLastMacroRun() {
 fun MasuSheetViewModel.onGenerateVbaFromPrompt(prompt: String): String =
     MacroStudioEngine.generateVbaFromNaturalLanguage(prompt, _uiState.value.viewport)
 
-// --- General-Purpose AI Spreadsheet Agent (Copilot / Gemini / Claude / GPT / Local) ---
+// --- General-Purpose AI Spreadsheet Agent (Gemini / Claude / GPT / Local) ---
 
 /**
  * [EN] Opens or closes the right-side AI Spreadsheet Assistant panel.
@@ -492,6 +551,7 @@ fun MasuSheetViewModel.onSendAiPrompt(prompt: String) {
     }
 
     if (usesLiveNetwork) {
+        val originWorkbookId = cur.activeWorkbookId
         _uiState.value = _uiState.value.copy(isLoading = true)
         viewModelScope.launch {
             val result = SpreadsheetAiAgent.executeAgentTurnSuspend(
@@ -505,6 +565,12 @@ fun MasuSheetViewModel.onSendAiPrompt(prompt: String) {
                 customModelName = customModelName,
                 isEn = isEn
             )
+            // [EN] Guard against cross-workbook mutation if the user switched workbook tabs while the network request was in flight.
+            // [JA] AI通信中にユーザーが別のブックタブへ切り替えた場合、切り替え先の別ブックを誤って書き換えないよう保護します。
+            if (_uiState.value.activeWorkbookId != originWorkbookId) {
+                _uiState.value = _uiState.value.copy(isLoading = false)
+                return@launch
+            }
             handleAiTurnResult(result)
         }
     } else {
@@ -587,6 +653,7 @@ fun MasuSheetViewModel.onExecuteConfirmedAiPlan() {
     val usesLiveNetwork = effectiveModelId != "auto" && (apiKey.isNotBlank() || effectiveModelId == "local")
     _uiState.value = cur.copy(activeAiPlanSession = null, isLoading = usesLiveNetwork)
     if (usesLiveNetwork) {
+        val originWorkbookId = cur.activeWorkbookId
         viewModelScope.launch {
             val result = SpreadsheetAiAgent.executeAgentTurnSuspend(
                 prompt = session.originalPrompt,
@@ -599,6 +666,10 @@ fun MasuSheetViewModel.onExecuteConfirmedAiPlan() {
                 customModelName = customModelName,
                 isEn = isEn
             )
+            if (_uiState.value.activeWorkbookId != originWorkbookId) {
+                _uiState.value = _uiState.value.copy(isLoading = false)
+                return@launch
+            }
             _uiState.value = _uiState.value.copy(isLoading = false)
             applyAiExecutionResult(result)
         }

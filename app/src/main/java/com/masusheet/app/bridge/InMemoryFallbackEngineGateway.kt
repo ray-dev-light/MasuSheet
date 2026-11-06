@@ -16,16 +16,16 @@ import org.json.JSONObject
 /**
  * ============================================================================
  * [EN] Pure-Kotlin In-Memory Fallback Spreadsheet Engine Gateway
- * Provides [InMemoryFallbackEngineGateway] for JVM unit tests and environments without JNI binaries, supporting formulas, Undo/Redo, sorting, filtering, merges, and safe save refusal (`C-05`).
+ * Provides [InMemoryFallbackEngineGateway] for JVM unit tests and environments without JNI binaries, supporting formulas, Undo/Redo, sorting, filtering, merges, and safe save refusal.
  *
  * ---
  * [JA / 日本語解説]
- * JVM単体テストやJNI未ロード環境向けに、数式評価・Undo/Redo・ソート・フィルタ・セル結合・安全な未対応バイナリ保存拒否 (`C-05`) を純粋Kotlinで提供するフォールバックエンジンです。
+ * JVM単体テストやJNI未ロード環境向けに、数式評価・Undo/Redo・ソート・フィルタ・セル結合・安全な未対応バイナリ保存拒否 を純粋Kotlinで提供するフォールバックエンジンです。
  * ============================================================================
  */
 
 /**
- * [EN] Pure-Kotlin [NativeEngineGateway] fallback for unit tests and non-JNI hosts, safely refusing binary `.xlsx` overwrite (`C-05`).
+ * [EN] Pure-Kotlin [NativeEngineGateway] fallback for unit tests and non-JNI hosts, safely refusing binary `.xlsx` overwrite.
  * [JA] 単体テストやJNI未ロード環境向けの純粋Kotlinフォールバック実装です（ダミーデータによるファイル破壊を防止します）。
  */
 class InMemoryFallbackEngineGateway : NativeEngineGateway {
@@ -163,7 +163,7 @@ class InMemoryFallbackEngineGateway : NativeEngineGateway {
 
     private fun pushUndo() {
         undoStack.addLast(HashMap(currentCells))
-        if (undoStack.size > 50) undoStack.removeFirst()
+        if (undoStack.size > 500) undoStack.removeFirst()
         redoStack.clear()
     }
 
@@ -273,11 +273,11 @@ class InMemoryFallbackEngineGateway : NativeEngineGateway {
     }
 
     /**
-     * [EN] `C-05` & `L-03`: Exports full RFC 4180 CSV/TSV when saving text delimited files in fallback mode,
+     * [EN] Exports full RFC 4180 CSV/TSV when saving text delimited files in fallback mode,
      *      and returns `null` for binary formats (`.xlsx`/`.xlsm`/`.xlsb`/`.ods`) so an unloaded `.so`
      *      never silently overwrites a real binary workbook with dummy bytes!
      * [JA] フォールバック時は `.csv`/`.tsv` のみ全セルRFC 4180出力を行い、バイナリ形式（`.xlsx` 等）は `null` を返して
-     *      ダミーデータによる上書き破壊（`C-05`）を防止します。
+     *      ダミーデータによる上書き破壊を防止します。
      */
     override fun saveWorkbookBytes(fileName: String): ByteArray? {
         val lower = fileName.trim().lowercase()

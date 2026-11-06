@@ -1,7 +1,6 @@
 package com.masusheet.app.storage
 
 import com.masusheet.app.core.MasuSheetConfig
-import com.masusheet.app.viewmodel.getAiCustomEndpoint
 
 /**
  * ============================================================================

@@ -1185,4 +1185,147 @@ class MasuSheetSecurityAndRegressionTest {
             assertTrue("Bundled license asset $fileName must exist", f.isFile && f.length() > 100L)
         }
     }
+
+    @Test
+    fun reauditItem1_securityMacroAiClipboardAndLicenseRegression() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Private internal app-data directories (including handoff & clipboard_images) block file:// access
+        val handoffSecret = File(File(ctx.cacheDir, "handoff").apply { mkdirs() }, "test_token.json")
+        val clipSecret = File(File(ctx.cacheDir, "clipboard_images").apply { mkdirs() }, "test.png")
+        assertTrue(ContentResolverDocumentGateway.isInternalPrivateDataFile(ctx, handoffSecret))
+        assertTrue(ContentResolverDocumentGateway.isInternalPrivateDataFile(ctx, clipSecret))
+        val docGw = ContentResolverDocumentGateway(ctx)
+        assertFalse(docGw.isSafeLocalFolderPath(ctx.cacheDir.absolutePath))
+
+        // 2. Plain-text content:// strings on clipboard are never auto-dereferenced as images
+        com.masusheet.app.ui.copyToSystemClipboard(ctx, "content://com.android.contacts/data/1")
+        assertNull(com.masusheet.app.ui.readImageBytesFromSystemClipboard(ctx))
+
+        // 3. VBA For..Next Step > 1 iterates full count (101 steps for 0..1000 Step 10) and deep nesting never overflows stack
+        val step10Vba = """
+            Sub TestStep10()
+                For r = 0 To 1000 Step 10
+                    Cells(1, 1).Value = r
+                Next r
+            End Sub
+        """.trimIndent()
+        val expandedStep10 = MacroStudioEngine.expandVbaStatements(step10Vba)
+        assertEquals(202, expandedStep10.size)
+        assertEquals("r = 0", expandedStep10.first())
+        assertEquals("r = 1000", expandedStep10[expandedStep10.size - 2])
+
+        val deepNestedVba = buildString {
+            appendLine("Sub DeepNest()")
+            for (d in 1..150) {
+                appendLine("For v$d = 1 To 2")
+            }
+            appendLine("Cells(1, 1).Value = 1")
+            for (d in 150 downTo 1) {
+                appendLine("Next v$d")
+            }
+            appendLine("End Sub")
+        }
+        val deepExpanded = MacroStudioEngine.expandVbaStatements(deepNestedVba)
+        assertTrue("Deeply nested VBA must terminate safely without StackOverflowError", deepExpanded.size <= 5_000)
+
+        // 4. AI Agent: Populated sheet is NOT wiped by unmatched analytical prompts, and destructive / path params are blocked
+        val vm = createTestViewModel(blank = true)
+        vm.onCommitCellEdit(0, 0, "Product")
+        vm.onCommitCellEdit(0, 1, "Sales")
+        vm.onCommitCellEdit(1, 0, "Alpha")
+        vm.onCommitCellEdit(1, 1, "1200")
+        vm.onCommitCellEdit(2, 0, "Beta")
+        vm.onCommitCellEdit(2, 1, "3400")
+        vm.onSelectAiEditMode("allow_edit")
+        vm.onSendAiPrompt("Summarize this table")
+        assertEquals("Alpha", vm.uiState.value.viewport.cellAt(1, 0)?.displayText)
+        assertEquals("3400", vm.uiState.value.viewport.cellAt(2, 1)?.displayText)
+
+        val blockedJson = """
+            {
+              "reply": "Test",
+              "commands": [
+                {"cmd": "edit.clearContents", "params": {"range": "A1:B3"}},
+                {"cmd": "home.deleteRows", "params": {}},
+                {"cmd": "data.removeDuplicates", "params": {}},
+                {"cmd": "pivot.delete", "params": {}},
+                {"cmd": "data.fromTextCsv", "params": {"path": "/etc/hosts"}},
+                {"cmd": "insert.picture", "params": {"nested": {"path": "/data/data/com.masusheet.app/shared_prefs/x.xml"}}},
+                {"cmd": "cell.set", "params": {"cell": "C1", "input": "Allowed"}}
+              ]
+            }
+        """.trimIndent()
+        val parsedBlocked = SpreadsheetAiAgent.parseJsonAiTurnResult(blockedJson, "allow_edit")
+        assertNotNull(parsedBlocked)
+        assertEquals("Only cell.set without path param should pass", 1, parsedBlocked!!.commands.size)
+        assertEquals("cell.set", parsedBlocked.commands.single().first)
+
+        // 5. If native Rust JNI is loaded in JVM test environment, verify SEC-01 filesystem command & path blocking + file.markSaved
+        if (com.masusheet.app.bridge.MasuSheetNativeBridge.isNativeLoaded) {
+            val jniGw = RustJniEngineGateway()
+            val sid = jniGw.createSession("blank")
+            try {
+                jniGw.executeCommand("cell.set", """{"cell":"A1","input":"DirtyCheck"}""")
+                assertTrue(jniGw.getViewport().isDirty)
+                val marked = jniGw.executeCommand("file.markSaved", """{"title":"Clean.xlsx"}""")
+                assertFalse("file.markSaved must clear dirty state", marked.isDirty)
+
+                val blockedSave = jniGw.executeCommand("file.save", """{"path":"/tmp/should_not_write.xlsx"}""")
+                assertFalse("Direct file.save must be rejected in JNI", blockedSave.ok)
+                val blockedCsvPath = jniGw.executeCommand("data.fromTextCsv", """{"path":"/etc/hosts"}""")
+                assertFalse("Command containing filesystem path parameter must be rejected in JNI", blockedCsvPath.ok)
+            } finally {
+                jniGw.closeSession(sid)
+            }
+        }
+
+        // 6. OSS License completeness: Unicode-DFS-2016 & Unicode-3.0 present, zero garbled Apache boilerplate Copyright lines, NOTICE synced
+        val assetsDir = File("src/main/assets/licenses").let {
+            if (it.isDirectory) it else File("app/src/main/assets/licenses")
+        }
+        val rootNotice = File("../NOTICE").let { if (it.isFile) it else File("NOTICE") }
+        val assetNotice = File(assetsDir, "NOTICE.txt")
+        assertEquals("Root NOTICE and bundled NOTICE.txt must match byte-for-byte", rootNotice.readText(), assetNotice.readText())
+        assertFalse(assetNotice.readText().contains("rayon"))
+        assertFalse(assetNotice.readText().contains("Googlebook"))
+
+        val thirdParty = File(assetsDir, "THIRD_PARTY_LICENSES.txt").readText()
+        assertTrue("THIRD_PARTY_LICENSES.txt must include Unicode, Inc. notice", thirdParty.contains("Unicode, Inc."))
+        assertTrue("THIRD_PARTY_LICENSES.txt must include Unicode-DFS-2016", thirdParty.contains("Unicode-DFS-2016"))
+        assertFalse("Must have zero garbled Licensor copyright lines", thirdParty.contains("Copyright: \"Licensor\""))
+        assertFalse("Must have zero Apache clause (c) copyright lines", thirdParty.contains("Copyright: Copyright (c) You must retain"))
+        assertFalse("Must not list unused rayon crate", thirdParty.contains("Package: rayon "))
+        assertTrue("NOTICE must include interoperability trademark disclaimer", assetNotice.readText().contains("SmartArt, WordArt, and Copilot"))
+
+        // 7. COPILOT function name preserved for compatibility while description accurately states offline #N/A behavior
+        val copilotEntry = com.masusheet.app.catalog.SpreadsheetFunctionCatalog.ALL_ENTRIES.firstOrNull { it.name == "COPILOT" }
+        assertNotNull("COPILOT must remain in 523-function catalog for formula compatibility", copilotEntry)
+        assertTrue(copilotEntry!!.descriptionJa.contains("#N/A"))
+        assertTrue(copilotEntry.descriptionEn.contains("#N/A"))
+
+        // 8. Macro full-snapshot rollback beyond 60-step overlay Undo ring buffer
+        val macroVm = createTestViewModel(blank = true)
+        macroVm.onResizeColumn(0, 145f)
+        val widthBeforeMacro = macroVm.uiState.value.viewport.colWidths[0]
+        assertEquals(145f, widthBeforeMacro, 0.01f)
+        val longMacro = MacroDefinition(
+            name = "Bulk80Steps",
+            vbaCode = """
+                Sub Bulk80Steps()
+                    For r = 1 To 80
+                        Cells(r, 1).Value = "Row" & r
+                    Next r
+                End Sub
+            """.trimIndent()
+        )
+        macroVm.run {
+            onRunMacro(longMacro)
+            assertEquals("Row80", uiState.value.viewport.cellAt(79, 0)?.displayText)
+            onRollbackLastMacroRun()
+            assertEquals("", uiState.value.viewport.cellAt(0, 0)?.displayText.orEmpty())
+            assertEquals("", uiState.value.viewport.cellAt(79, 0)?.displayText.orEmpty())
+            assertEquals(145f, uiState.value.viewport.colWidths[0], 0.01f)
+        }
+    }
 }

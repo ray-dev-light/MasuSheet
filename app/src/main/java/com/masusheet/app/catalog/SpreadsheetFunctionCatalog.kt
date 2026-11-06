@@ -1,9 +1,5 @@
 package com.masusheet.app.catalog
 
-import com.masusheet.app.R
-import java.net.URL
-import java.util.Date
-
 /**
  * ============================================================================
  * [EN] 523 Worksheet Function Catalog, Signatures, Bilingual Docs, & Auto-Complete
@@ -695,7 +691,7 @@ object SpreadsheetFunctionCatalog {
         "WEBSERVICE" to ("WEBSERVICE(URL)" to "インターネットまたはイントラネット上の Web サービスからデータを取得します。"),
         "DETECTLANGUAGE" to ("DETECTLANGUAGE(テキスト)" to "指定したテキストの言語コード（\"ja\", \"en\" 等）を自動判定して返します。"),
         "TRANSLATE" to ("TRANSLATE(テキスト, [元の言語], [翻訳先の言語])" to "テキストを指定した翻訳先の言語に翻訳します。"),
-        "COPILOT" to ("COPILOT(プロンプト, [コンテキスト範囲])" to "AIアシスタント（Copilot / Gemini）を呼び出してテキスト生成やデータ分析結果をセルに返します。"),
+        "COPILOT" to ("COPILOT(プロンプト, [コンテキスト範囲])" to "数式互換用のAIワークシート関数です（オフライン計算エンジンでは #N/A を返します。AI生成はAIアシスタントをご利用ください）。"),
         "PY" to ("PY(Pythonコード)" to "セル内で Python 式・データフレーム計算を評価して結果を返します。"),
         "CALL" to ("CALL(ライブラリ名, プロシージャ名, 型文字列, [引数1], ...)" to "ダイナミックリンクライブラリ（DLL）またはコードリソースのプロシージャを呼び出します。"),
         "REGISTER.ID" to ("REGISTER.ID(ライブラリ名, プロシージャ名, [型文字列])" to "指定したダイナミックリンクライブラリ（DLL）またはコードリソースの登録 ID を返します。")
@@ -784,6 +780,7 @@ object SpreadsheetFunctionCatalog {
         "CHOOSE" to "Uses index_num to return a value from the list of value arguments.",
         "CONCAT" to "Combines the text from multiple ranges and/or strings.",
         "CONCATENATE" to "Joins two or more text strings into one string.",
+        "COPILOT" to "Compatibility AI worksheet function (returns #N/A in the offline calculation engine; use the AI Assistant panel for generation).",
         "COS" to "Returns the cosine of the given angle in radians.",
         "COUNT" to "Counts the number of cells in a range that contain numbers.",
         "COUNTA" to "Counts the number of non-empty cells in a range.",

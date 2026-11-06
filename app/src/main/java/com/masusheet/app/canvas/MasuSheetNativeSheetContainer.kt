@@ -150,7 +150,7 @@ class MasuSheetNativeSheetContainer(
                                 gridView.invalidate()
                                 return true
                             }
-                        } catch (_: Throwable) {
+                        } catch (_: Exception) {
                         }
                         return super.commitContent(inputContentInfo, flags, opts)
                     }

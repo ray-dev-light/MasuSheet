@@ -26,6 +26,7 @@ interface DocumentIoGateway {
     fun readBytes(uriString: String): ByteArray?
     fun writeBytes(uriString: String, bytes: ByteArray): Boolean
     fun resolveDisplayName(uriString: String): String
+    fun isSafeLocalFolderPath(folderPath: String): Boolean = true
     fun listFolderFiles(folderPath: String): List<ExistingFolderFileItem> = emptyList()
     fun saveFileInFolder(
         folderPath: String,
@@ -125,6 +126,12 @@ class ContentResolverDocumentGateway(
     private fun isInternalPrivateDataFile(file: File): Boolean =
         isInternalPrivateDataFile(context, file)
 
+    override fun isSafeLocalFolderPath(folderPath: String): Boolean {
+        val clean = folderPath.trim()
+        if (clean.isEmpty() || clean.startsWith("content://", ignoreCase = true)) return false
+        return !isInternalPrivateDataFile(File(clean))
+    }
+
     companion object {
         /**
          * [EN] Hard 64 MiB ceiling on single-document reads to prevent OutOfMemoryError on oversized streams.
@@ -148,22 +155,27 @@ class ContentResolverDocumentGateway(
             return out.toByteArray()
         }
 
+        /**
+         * [EN] Rejects any `file://` path pointing inside the app's private credential-protected or device-protected `dataDir`
+         *      (`shared_prefs`, `files`, `cache`, `databases`, etc.). Legitimate handoff and clipboard image files are accessed
+         *      solely via capability tokens (`WindowHandoffManager`) or `MasuSheetClipboardImageProvider` (`content://`), never `file://`.
+         * [JA] アプリ内部の機密データ領域（`dataDir` / `deviceProtectedDataDir` 配下の `shared_prefs`・`cache`・`files` 等）を指す
+         *      あらゆる `file://` パスを拒否します。
+         */
         fun isInternalPrivateDataFile(context: Context, file: File): Boolean {
             val canonical = runCatching { file.canonicalFile }.getOrNull() ?: return true
-            val dataRoot = runCatching { File(context.applicationInfo.dataDir).canonicalFile }.getOrNull()
-            val handoffDir = runCatching { File(context.cacheDir, "handoff").canonicalFile }.getOrNull()
-            if (handoffDir != null && canonical.path.startsWith(handoffDir.path + File.separator)) {
-                return false
+            val privateRoots = buildList {
+                runCatching { context.applicationInfo?.dataDir?.takeIf { it.isNotBlank() }?.let { add(File(it).canonicalFile) } }
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    runCatching {
+                        context.applicationInfo?.deviceProtectedDataDir?.takeIf { it.isNotBlank() }?.let { add(File(it).canonicalFile) }
+                    }
+                }
+                runCatching { context.filesDir?.parentFile?.canonicalFile?.let { add(it) } }
             }
-            val clipboardCacheDir = runCatching { File(context.cacheDir, "clipboard_images").canonicalFile }.getOrNull()
-            if (clipboardCacheDir != null && canonical.path.startsWith(clipboardCacheDir.path + File.separator)) {
-                return false
+            return privateRoots.any { root ->
+                canonical == root || canonical.path.startsWith(root.path + File.separator)
             }
-            val clipboardFilesDir = runCatching { File(context.filesDir, "clipboard_images").canonicalFile }.getOrNull()
-            if (clipboardFilesDir != null && canonical.path.startsWith(clipboardFilesDir.path + File.separator)) {
-                return false
-            }
-            return dataRoot != null && (canonical == dataRoot || canonical.path.startsWith(dataRoot.path + File.separator))
         }
     }
 

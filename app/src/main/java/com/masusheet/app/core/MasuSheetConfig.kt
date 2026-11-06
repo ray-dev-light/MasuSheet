@@ -52,6 +52,10 @@ object MasuSheetConfig {
     const val DARK_BG_COLOR_INT: Int = 0xFF14181D.toInt()
     const val MAX_RECENT_FILES = 8
 
+    /**
+     * [EN] Pure URL/query formatter retained for asset-URI routing and regression test compatibility (no WebView is instantiated at runtime).
+     * [JA] アセットURI構成および既存テスト互換のために保持されている純粋なURL文字列生成ヘルパです（実行時にWebViewは使用しません）。
+     */
     fun buildHostAssetUrl(
         sample: String = "sales",
         language: String = "ja",
@@ -291,7 +295,7 @@ object MasuSheetConfig {
                 "VP8X" -> {
                     val w = 1 + (u8(24) or (u8(25) shl 8) or (u8(26) shl 16))
                     val h = 1 + (u8(27) or (u8(28) shl 8) or (u8(29) shl 16))
-                    if (w > 0 && h > 0) return w to h
+                    if (w in 1..32768 && h in 1..32768) return w to h
                 }
             }
         }
@@ -300,7 +304,7 @@ object MasuSheetConfig {
         return runCatching {
             val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-            if (opts.outWidth > 0 && opts.outHeight > 0) opts.outWidth to opts.outHeight else null
+            if (opts.outWidth in 1..32768 && opts.outHeight in 1..32768) opts.outWidth to opts.outHeight else null
         }.getOrNull()
     }
 
@@ -361,64 +365,85 @@ object MasuSheetConfig {
 
         val compressedBytes = runCatching {
             val bitmap = android.graphics.Bitmap.createBitmap(outW, outH, android.graphics.Bitmap.Config.ARGB_8888)
-            val canvas = android.graphics.Canvas(bitmap)
-            val paint = android.graphics.Paint(
-                android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG
-            )
-            val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                textAlign = android.graphics.Paint.Align.CENTER
+            try {
+                val canvas = android.graphics.Canvas(bitmap)
+                val paint = android.graphics.Paint(
+                    android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG
+                )
+                val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    textAlign = android.graphics.Paint.Align.CENTER
+                }
+                for (obj in objects) {
+                    val left = (obj.xPt - minX) * scale
+                    val top = (obj.yPt - minY) * scale
+                    val right = left + obj.widthPt.coerceAtLeast(1f) * scale
+                    val bottom = top + obj.heightPt.coerceAtLeast(1f) * scale
+                    val dst = android.graphics.RectF(left, top, right, bottom)
+                    canvas.save()
+                    if (obj.rotationDeg != 0f) {
+                        canvas.rotate(obj.rotationDeg, dst.centerX(), dst.centerY())
+                    }
+                    var drewBitmap = false
+                    if (obj.kind == SheetObjectKind.IMAGE && obj.imageBytes != null && obj.imageBytes.isNotEmpty()) {
+                        val srcBmp = runCatching {
+                            val boundsOpts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            android.graphics.BitmapFactory.decodeByteArray(obj.imageBytes, 0, obj.imageBytes.size, boundsOpts)
+                            if (boundsOpts.outWidth in 1..16384 && boundsOpts.outHeight in 1..16384) {
+                                var sample = 1
+                                while ((boundsOpts.outWidth / sample) > 2400 || (boundsOpts.outHeight / sample) > 2400) {
+                                    sample *= 2
+                                }
+                                val decodeOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                                android.graphics.BitmapFactory.decodeByteArray(obj.imageBytes, 0, obj.imageBytes.size, decodeOpts)
+                            } else {
+                                null
+                            }
+                        }.getOrNull()
+                        if (srcBmp != null) {
+                            try {
+                                if (srcBmp.width > 0 && srcBmp.height > 0) {
+                                    paint.style = android.graphics.Paint.Style.FILL
+                                    paint.color = 0xFFFFFFFF.toInt()
+                                    canvas.drawBitmap(srcBmp, null, dst, paint)
+                                    drewBitmap = true
+                                }
+                            } finally {
+                                srcBmp.recycle()
+                            }
+                        }
+                    }
+                    if (!drewBitmap) {
+                        if (obj.fillColor != 0) {
+                            paint.style = android.graphics.Paint.Style.FILL
+                            paint.color = obj.fillColor
+                            canvas.drawRoundRect(dst, 6f * scale, 6f * scale, paint)
+                        }
+                        if (obj.title.isNotBlank()) {
+                            textPaint.color = obj.textColor
+                            textPaint.textSize = 12f * scale
+                            val fm = textPaint.fontMetrics
+                            canvas.drawText(
+                                obj.title,
+                                dst.centerX(),
+                                dst.centerY() - (fm.descent + fm.ascent) * 0.5f,
+                                textPaint
+                            )
+                        }
+                    }
+                    if (obj.strokeWidthPt > 0.05f && obj.strokeColor != 0) {
+                        paint.style = android.graphics.Paint.Style.STROKE
+                        paint.strokeWidth = (obj.strokeWidthPt * scale).coerceAtLeast(1f)
+                        paint.color = obj.strokeColor
+                        canvas.drawRoundRect(dst, 4f * scale, 4f * scale, paint)
+                    }
+                    canvas.restore()
+                }
+                val baos = java.io.ByteArrayOutputStream()
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, baos)
+                baos.toByteArray()
+            } finally {
+                bitmap.recycle()
             }
-            for (obj in objects) {
-                val left = (obj.xPt - minX) * scale
-                val top = (obj.yPt - minY) * scale
-                val right = left + obj.widthPt.coerceAtLeast(1f) * scale
-                val bottom = top + obj.heightPt.coerceAtLeast(1f) * scale
-                val dst = android.graphics.RectF(left, top, right, bottom)
-                canvas.save()
-                if (obj.rotationDeg != 0f) {
-                    canvas.rotate(obj.rotationDeg, dst.centerX(), dst.centerY())
-                }
-                var drewBitmap = false
-                if (obj.kind == SheetObjectKind.IMAGE && obj.imageBytes != null && obj.imageBytes.isNotEmpty()) {
-                    val srcBmp = runCatching {
-                        android.graphics.BitmapFactory.decodeByteArray(obj.imageBytes, 0, obj.imageBytes.size)
-                    }.getOrNull()
-                    if (srcBmp != null && srcBmp.width > 0 && srcBmp.height > 0) {
-                        paint.style = android.graphics.Paint.Style.FILL
-                        paint.color = 0xFFFFFFFF.toInt()
-                        canvas.drawBitmap(srcBmp, null, dst, paint)
-                        drewBitmap = true
-                    }
-                }
-                if (!drewBitmap) {
-                    if (obj.fillColor != 0) {
-                        paint.style = android.graphics.Paint.Style.FILL
-                        paint.color = obj.fillColor
-                        canvas.drawRoundRect(dst, 6f * scale, 6f * scale, paint)
-                    }
-                    if (obj.title.isNotBlank()) {
-                        textPaint.color = obj.textColor
-                        textPaint.textSize = 12f * scale
-                        val fm = textPaint.fontMetrics
-                        canvas.drawText(
-                            obj.title,
-                            dst.centerX(),
-                            dst.centerY() - (fm.descent + fm.ascent) * 0.5f,
-                            textPaint
-                        )
-                    }
-                }
-                if (obj.strokeWidthPt > 0.05f && obj.strokeColor != 0) {
-                    paint.style = android.graphics.Paint.Style.STROKE
-                    paint.strokeWidth = (obj.strokeWidthPt * scale).coerceAtLeast(1f)
-                    paint.color = obj.strokeColor
-                    canvas.drawRoundRect(dst, 4f * scale, 4f * scale, paint)
-                }
-                canvas.restore()
-            }
-            val baos = java.io.ByteArrayOutputStream()
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, baos)
-            baos.toByteArray()
         }.getOrNull()
 
         val finalPng = if (compressedBytes != null && decodeImageDimensions(compressedBytes) == (outW to outH)) {

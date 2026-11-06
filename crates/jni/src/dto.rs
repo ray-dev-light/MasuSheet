@@ -50,14 +50,16 @@ pub(crate) struct CellDto {
     /// [JA] 文字装飾および配置を表すビットフラグ（詳細は [`encode_style_flags`] を参照）。
     #[serde(skip_serializing_if = "is_zero")]
     pub(crate) fl: u32,
-    /// [EN] Encoded top, right, bottom, and left borders (see [`encode_border`]).
-    /// [JA] 上・右・下・左の罫線エンコード値（詳細は [`encode_border`] を参照）。
+    /// [EN] Encoded top border (see [`encode_border`]). / [JA] 上罫線のエンコード値。
     #[serde(skip_serializing_if = "is_zero")]
     pub(crate) bt: u32,
+    /// [EN] Encoded right border (see [`encode_border`]). / [JA] 右罫線のエンコード値。
     #[serde(skip_serializing_if = "is_zero")]
     pub(crate) br: u32,
+    /// [EN] Encoded bottom border (see [`encode_border`]). / [JA] 下罫線のエンコード値。
     #[serde(skip_serializing_if = "is_zero")]
     pub(crate) bb: u32,
+    /// [EN] Encoded left border (see [`encode_border`]). / [JA] 左罫線のエンコード値。
     #[serde(skip_serializing_if = "is_zero")]
     pub(crate) bl: u32,
 }
@@ -191,7 +193,11 @@ pub(crate) struct ViewportDto {
     pub(crate) hidden_rows: Vec<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) hidden_cols: Vec<u32>,
+    /// [EN] Merged cell regions intersecting the viewport as 0-based inclusive `[start_row, start_col, end_row, end_col]`.
+    /// [JA] ビューポートと交差する結合セル範囲（0始まりの両端含む `[開始行, 開始列, 終了行, 終了列]`）。
     pub(crate) merges: Vec<[u32; 4]>,
+    /// [EN] Dynamic-array spill regions intersecting the viewport as 0-based inclusive `[start_row, start_col, end_row, end_col]`.
+    /// [JA] ビューポートと交差するスピル範囲（0始まりの両端含む `[開始行, 開始列, 終了行, 終了列]`）。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) spill_ranges: Vec<[u32; 4]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]

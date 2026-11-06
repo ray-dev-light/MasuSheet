@@ -75,7 +75,7 @@ import kotlin.math.roundToInt
 /**
  * ============================================================================
  * [EN] Floating Right-Click / Long-Press Context Menu & Data Validation Dropdown
- * Provides [showContextMenuAt] (cell, row/column header, chart/shape/image context actions) and [showValidationListDropdownAt] with measured viewport clamping (`H-13`).
+ * Provides [showContextMenuAt] (cell, row/column header, chart/shape/image context actions) and [showValidationListDropdownAt] with measured viewport clamping.
  *
  * ---
  * [JA / 日本語解説]

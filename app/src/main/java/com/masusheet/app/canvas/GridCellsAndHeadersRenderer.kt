@@ -4,14 +4,6 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.ui.graphics.Color
 import com.masusheet.app.core.FormulaPointModeHelper
 import com.masusheet.app.core.InlineCheckboxHelper
 import com.masusheet.app.core.MasuSheetConfig
@@ -29,11 +21,11 @@ import kotlin.math.roundToInt
 /**
  * ============================================================================
  * [EN] Grid Layer 1 (Cells, Merges, Borders, Sparklines, Checkboxes) & Layer 2 (Headers, Selection) Renderer
- * Renders 4-quadrant frozen/scrollable gridlines, off-screen-anchored merged cells (`H-12`), borders, wrapped text, sparklines, checkboxes, row/column headers, and formula highlights.
+ * Renders 4-quadrant frozen/scrollable gridlines, off-screen-anchored merged cells, borders, wrapped text, sparklines, checkboxes, row/column headers, and formula highlights.
  *
  * ---
  * [JA / 日本語解説]
- * 4象限対応のセル背景・罫線・画面外起点の結合セル (`H-12`)・折り返し文字列・スパークライン・セル内チェックボックス（Layer 1）と、選択枠・行列ヘッダ・数式参照枠（Layer 2）を描画します。
+ * 4象限対応のセル背景・罫線・画面外起点の結合セル・折り返し文字列・スパークライン・セル内チェックボックス（Layer 1）と、選択枠・行列ヘッダ・数式参照枠（Layer 2）を描画します。
  * ============================================================================
  */
 
@@ -208,7 +200,7 @@ internal fun MasuSheetNativeGridView.renderStaticQuadrant(
     bgPaint.color = sheetBg
     canvas.drawRect(clipLeft, clipTop, clipRight, clipBottom, bgPaint)
 
-    // Collect merged cells whose anchor is above/left of (qStartRow, qStartCol) yet still intersect this quadrant (H-12)
+    // Collect merged cells whose anchor is above/left of (qStartRow, qStartCol) yet still intersect this quadrant
     val offscreenAnchorMerges = if (snap.merges.isNotEmpty()) {
         snap.merges.filter { m ->
             m.endRow >= qStartRow && m.startRow <= qEndRow &&

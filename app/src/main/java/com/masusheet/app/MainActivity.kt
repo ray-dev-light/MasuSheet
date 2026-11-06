@@ -31,11 +31,11 @@ import com.masusheet.app.viewmodel.onOpenDocumentUriAsync
 /**
  * ============================================================================
  * [EN] Android Application Entry Activity & Multi-Window Secondary Activity
- * Defines [MainActivity] and [SecondaryWorkbookActivity] handling app startup, safe UUID window handoff intents (`C-02`), document open intents, and Compose theme setup.
+ * Defines [MainActivity] and [SecondaryWorkbookActivity] handling app startup, safe UUID window handoff intents, document open intents, and Compose theme setup.
  *
  * ---
  * [JA / 日本語解説]
- * アプリのメインActivity ([MainActivity]) およびマルチウィンドウ用セカンダリActivity ([SecondaryWorkbookActivity]) を定義し、UUID検証付きウィンドウハンドオフ (`C-02`) やファイル起動Intentを処理します。
+ * アプリのメインActivity ([MainActivity]) およびマルチウィンドウ用セカンダリActivity ([SecondaryWorkbookActivity]) を定義し、UUID検証付きウィンドウハンドオフ やファイル起動Intentを処理します。
  * ============================================================================
  */
 
@@ -53,9 +53,9 @@ open class MainActivity : ComponentActivity() {
         get() = viewModel
 
     /**
-     * [EN] Routes incoming Shelf/Taskbar shortcut intents, multi-window UUID handoffs (`C-02`),
+     * [EN] Routes incoming Shelf/Taskbar shortcut intents, multi-window UUID handoffs,
      *      and document open intents without ever discarding existing workbook sessions or active cell edits.
-     * [JA] シェルフの右クリックショートカット、UUID検証付き別ウィンドウ引き継ぎ (`C-02`)、およびファイル起動 Intent を、
+     * [JA] シェルフの右クリックショートカット、UUID検証付き別ウィンドウ引き継ぎ、およびファイル起動 Intent を、
      *      既存のブックデータや入力途中のセル編集を一切失わずに処理します。
      */
     private fun handleWindowIntent(intent: Intent?, isNewIntent: Boolean) {

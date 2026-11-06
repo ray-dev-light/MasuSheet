@@ -83,20 +83,17 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
                 .build()
             keyGen.init(spec)
             keyGen.generateKey()
-        } catch (_: Throwable) {
+        } catch (_: Exception) {
             null
         }
     }
 
-    private fun resetCorruptedKeystoreEntry(prefKeyToClear: String?) {
+    private fun deleteMasterKeyEntry() {
         runCatching {
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             if (ks.containsAlias(KEY_ALIAS)) {
                 ks.deleteEntry(KEY_ALIAS)
             }
-        }
-        if (prefKeyToClear != null) {
-            prefs.edit().remove(prefKeyToClear).commit()
         }
     }
 
@@ -115,10 +112,10 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(GCM_TAG_BITS, iv))
             String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
-        } catch (_: Throwable) {
-            // [EN] Self-heal invalidated/corrupted Keystore key and purge unreadable ciphertext so subsequent saves persist cleanly.
-            // [JA] Keystore 鍵の失効や暗号文破損時は古い鍵・暗号文を安全に破棄し、次回保存時に新しい鍵で正常に永続化できるように自己修復します。
-            resetCorruptedKeystoreEntry(key)
+        } catch (_: Exception) {
+            // [EN] Purge only the unreadable ciphertext for `key`; never delete `KEY_ALIAS` here so valid keys for other AI providers stay intact.
+            // [JA] 復号失敗時は該当 `key` の破損エントリのみを破棄し、他のAIプロバイダ用の正常な暗号化キーを巻き添えで消去しないように保護します。
+            prefs.edit().remove(key).commit()
             ""
         }
     }
@@ -138,7 +135,7 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
                 fallbackMemory.remove(key)
                 prefs.edit().putString(key, "$ivB64:$encB64").commit()
                 true
-            } catch (_: Throwable) {
+            } catch (_: Exception) {
                 false
             }
         }
@@ -147,8 +144,10 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
         if (firstKey != null && tryEncryptWith(firstKey)) {
             return
         }
-        // Retry once after rotating a potentially invalidated AndroidKeyStore entry
-        resetCorruptedKeystoreEntry(key)
+        // [EN] Rotate the AndroidKeyStore master key only when `Cipher.init(ENCRYPT_MODE)` itself fails (e.g. hardware key permanently invalidated).
+        // [JA] 暗号化初期化自体が失敗した場合（ハードウェア鍵の恒久失効など）にのみマスター鍵を再生成してリトライします。
+        deleteMasterKeyEntry()
+        prefs.edit().clear().commit()
         val regeneratedKey = getOrCreateMasterKey()
         if (regeneratedKey != null && tryEncryptWith(regeneratedKey)) {
             return

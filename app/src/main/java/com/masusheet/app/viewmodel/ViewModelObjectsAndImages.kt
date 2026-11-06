@@ -21,11 +21,11 @@ import org.json.JSONObject
 /**
  * ============================================================================
  * [EN] Floating Shapes, TextBoxes, Clipboard/URI Images, Multi-Select Alignment, & Nudge Operations
- * Manages shape/textbox insertion, fill/stroke/per-element text colors, rotation, safe image insertion & downsampling (`C-09`), `Shift` multi-select, `1pt` nudge (`M-08`), alignment, and combined PNG copy.
+ * Manages shape/textbox insertion, fill/stroke/per-element text colors, rotation, safe image insertion & downsampling, `Shift` multi-select, `1pt` nudge, alignment, and combined PNG copy.
  *
  * ---
  * [JA / 日本語解説]
- * 図形・テキストボックス挿入、塗りつぶし・枠線・要素別文字色、回転、安全な画像挿入と縮小 (`C-09`)、複数選択・整列・矢印1pt微調整 (`M-08`)・統合PNGコピーを担うモジュールです。
+ * 図形・テキストボックス挿入、塗りつぶし・枠線・要素別文字色、回転、安全な画像挿入と縮小、複数選択・整列・矢印1pt微調整・統合PNGコピーを担うモジュールです。
  * ============================================================================
  */
 
@@ -518,7 +518,7 @@ fun MasuSheetViewModel.parseNumericCell(cell: NativeCellModel?): Float? {
 
 /**
  * [EN] Pastes an image strictly from the active Android system clipboard (`clipboardImage`).
- *      Never scans device storage or Screenshot/Download directories without explicit user selection (`C-09`).
+ *      Never scans device storage or Screenshot/Download directories without explicit user selection.
  * [JA] Androidのシステムクリップボードにある画像のみをシートへ貼り付けます（端末内フォルダの無断走査は行いません）。
  */
 fun MasuSheetViewModel.onPasteScreenshotOrLatestImage(
@@ -763,7 +763,7 @@ fun MasuSheetViewModel.onMoveOrResizeSheetObject(objectId: String, newXPt: Float
 /**
  * [EN] Nudges all currently selected sheet object(s) (`effectiveSelectedObjectIds`) by `(dxPt, dyPt)` points
  * when the user presses keyboard arrow keys (`↑`, `↓`, `←`, `→`), enabling 1pt precision alignment of pasted images.
- * Consecutive nudges within 600ms coalesce into a single Undo entry (`M-08`).
+ * Consecutive nudges within 600ms coalesce into a single Undo entry.
  *
  * ---
  * [JA] キーボードの矢印キー（`↑` / `↓` / `←` / `→`）で選択中の画像・図形を `(dxPt, dyPt)` ポイントずつ微調整移動します。

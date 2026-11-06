@@ -1,7 +1,5 @@
 package com.masusheet.app.model
 
-import com.masusheet.app.MainActivity
-import com.masusheet.app.SecondaryWorkbookActivity
 import com.masusheet.app.ai.AiChatMessage
 import com.masusheet.app.ai.AiPlanSession
 import com.masusheet.app.ai.MacroDefinition
@@ -101,7 +99,7 @@ data class OpenWorkbookSession(
 /**
  * [EN] Lossless JSON bundle serializer for transferring an [OpenWorkbookSession] across
  * `:window2` process boundaries (`SecondaryWorkbookActivity` <-> `MainActivity`) without losing
- * charts, images, shapes, PivotTables, custom styles, column widths, or row heights (`C-04`).
+ * charts, images, shapes, PivotTables, custom styles, column widths, or row heights.
  *
  * [JA] 別ウィンドウ（`:window2`）への移動およびメインウィンドウへの統合時に、グラフ・画像・図形・
  * ピボットテーブル・カスタム書式・列幅/行高を欠落なく引き継ぐためのシリアライザです。
@@ -296,6 +294,10 @@ object WorkbookHandoffSerializer {
     }
 
     private const val MAX_HANDOFF_OBJECTS = 500
+    private const val MAX_HANDOFF_SERIES = 128
+    private const val MAX_HANDOFF_SERIES_POINTS = 10_000
+    private const val MAX_HANDOFF_PIVOTS = 64
+    private const val MAX_HANDOFF_PIVOT_RECORDS = 20_000
     private const val MAX_HANDOFF_ARRAY_ITEMS = 50_000
 
     fun decodeOverlayMetadataJson(rawJson: String, workbookBytes: ByteArray? = null): OpenWorkbookSession? {
@@ -321,18 +323,18 @@ object WorkbookHandoffSerializer {
                         null
                     }
                     val labelsArr = o.optJSONArray("chartLabels")
-                    val labels = if (labelsArr != null) List(labelsArr.length()) { labelsArr.optString(it, "") } else emptyList()
+                    val labels = if (labelsArr != null) List(minOf(labelsArr.length(), MAX_HANDOFF_SERIES_POINTS)) { labelsArr.optString(it, "") } else emptyList()
                     val valsArr = o.optJSONArray("chartValues")
-                    val vals = if (valsArr != null) List(valsArr.length()) { valsArr.optDouble(it, 0.0).toFloat() } else emptyList()
+                    val vals = if (valsArr != null) List(minOf(valsArr.length(), MAX_HANDOFF_SERIES_POINTS)) { valsArr.optDouble(it, 0.0).toFloat() } else emptyList()
                     val seriesList = mutableListOf<ChartSeries>()
                     val seriesArr = o.optJSONArray("chartSeries")
                     if (seriesArr != null) {
-                        for (si in 0 until seriesArr.length()) {
+                        for (si in 0 until minOf(seriesArr.length(), MAX_HANDOFF_SERIES)) {
                             val sj = seriesArr.optJSONObject(si) ?: continue
                             val svArr = sj.optJSONArray("values")
-                            val sv = if (svArr != null) List(svArr.length()) { svArr.optDouble(it, 0.0).toFloat() } else emptyList()
+                            val sv = if (svArr != null) List(minOf(svArr.length(), MAX_HANDOFF_SERIES_POINTS)) { svArr.optDouble(it, 0.0).toFloat() } else emptyList()
                             val xlArr = sj.optJSONArray("xLabels")
-                            val xl = if (xlArr != null) List(xlArr.length()) { xlArr.optString(it, "") } else emptyList()
+                            val xl = if (xlArr != null) List(minOf(xlArr.length(), MAX_HANDOFF_SERIES_POINTS)) { xlArr.optString(it, "") } else emptyList()
                             seriesList.add(
                                 ChartSeries(
                                     name = sj.optString("name", ""),
@@ -347,7 +349,7 @@ object WorkbookHandoffSerializer {
                         }
                     }
                     val yColsArr = o.optJSONArray("chartYColIndices")
-                    val yCols = if (yColsArr != null) List(yColsArr.length()) { yColsArr.optInt(it, 0) } else emptyList()
+                    val yCols = if (yColsArr != null) List(minOf(yColsArr.length(), MAX_HANDOFF_SERIES)) { yColsArr.optInt(it, 0) } else emptyList()
                     sheetObjects.add(
                         NativeSheetObject(
                             id = o.optString("id", "obj_$i"),
@@ -447,7 +449,7 @@ object WorkbookHandoffSerializer {
 
             val commentsMap = mutableMapOf<Pair<Int, Long>, String>()
             root.optJSONArray("cellComments")?.let { arr ->
-                for (i in 0 until arr.length()) {
+                for (i in 0 until minOf(arr.length(), MAX_HANDOFF_ARRAY_ITEMS)) {
                     val o = arr.optJSONObject(i) ?: continue
                     commentsMap[o.optInt("s", 0) to o.optLong("k", 0L)] = o.optString("v", "")
                 }
@@ -455,7 +457,7 @@ object WorkbookHandoffSerializer {
 
             val linksMap = mutableMapOf<Pair<Int, Long>, String>()
             root.optJSONArray("cellHyperlinks")?.let { arr ->
-                for (i in 0 until arr.length()) {
+                for (i in 0 until minOf(arr.length(), MAX_HANDOFF_ARRAY_ITEMS)) {
                     val o = arr.optJSONObject(i) ?: continue
                     linksMap[o.optInt("s", 0) to o.optLong("k", 0L)] = o.optString("v", "")
                 }
@@ -469,7 +471,7 @@ object WorkbookHandoffSerializer {
                     val sIdx = k.toIntOrNull() ?: continue
                     val mArr = obj.optJSONArray(k) ?: continue
                     val mList = mutableListOf<NativeMergeRange>()
-                    for (mi in 0 until mArr.length()) {
+                    for (mi in 0 until minOf(mArr.length(), MAX_HANDOFF_ARRAY_ITEMS)) {
                         val mo = mArr.optJSONObject(mi) ?: continue
                         mList.add(
                             NativeMergeRange(
@@ -486,11 +488,11 @@ object WorkbookHandoffSerializer {
 
             val pivots = mutableListOf<PivotTableDefinition>()
             root.optJSONArray("pivotTables")?.let { arr ->
-                for (i in 0 until arr.length()) {
+                for (i in 0 until minOf(arr.length(), MAX_HANDOFF_PIVOTS)) {
                     val pj = arr.optJSONObject(i) ?: continue
                     fun jsonStrList(key: String): List<String> {
                         val a = pj.optJSONArray(key) ?: return emptyList()
-                        return List(a.length()) { a.optString(it, "") }
+                        return List(minOf(a.length(), MAX_HANDOFF_SERIES_POINTS)) { a.optString(it, "") }
                     }
                     val sfMap = mutableMapOf<String, String>()
                     pj.optJSONObject("selectedFilterValues")?.let { sfObj ->
@@ -502,7 +504,7 @@ object WorkbookHandoffSerializer {
                     }
                     val vfList = mutableListOf<PivotValueFieldSpec>()
                     pj.optJSONArray("valueFields")?.let { vfa ->
-                        for (vi in 0 until vfa.length()) {
+                        for (vi in 0 until minOf(vfa.length(), MAX_HANDOFF_SERIES)) {
                             val vfo = vfa.optJSONObject(vi) ?: continue
                             val agg = runCatching { PivotAggFunction.valueOf(vfo.optString("agg", "SUM")) }
                                 .getOrDefault(PivotAggFunction.SUM)
@@ -511,7 +513,7 @@ object WorkbookHandoffSerializer {
                     }
                     val recs = mutableListOf<Map<String, String>>()
                     pj.optJSONArray("sourceRecords")?.let { ra ->
-                        for (ri in 0 until ra.length()) {
+                        for (ri in 0 until minOf(ra.length(), MAX_HANDOFF_PIVOT_RECORDS)) {
                             val ro = ra.optJSONObject(ri) ?: continue
                             val m = mutableMapOf<String, String>()
                             val ks = ro.keys()
@@ -701,7 +703,7 @@ data class MasuSheetUiState(
     val savedMacros: List<MacroDefinition> = MacroStudioEngine.defaultBuiltInMacros(),
     val vbaDebugState: VbaDebugState = VbaDebugState(),
     val lastMacroUndoSteps: Int = 0,
-    // AI Assistant State (Copilot / Gemini / Claude / GPT / Local)
+    // AI Assistant State (Gemini / Claude / GPT / Local)
     val isAiPanelOpen: Boolean = false,
     val selectedAiModelId: String = "auto",
     val selectedAiEditMode: String = "allow_edit",

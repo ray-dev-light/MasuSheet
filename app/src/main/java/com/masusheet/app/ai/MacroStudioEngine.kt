@@ -200,10 +200,14 @@ object MacroStudioEngine {
     }
 
     /**
-     * [EN] Expands `For ... Next` loops using 64-bit bounds and strips comments/`Sub`/`End Sub` into flat statements for deterministic full-run and 1-step debugging.
-     * [JA] `For ... Next` ループを64bit整数境界で安全に展開し、コメントや `Sub`/`End Sub` を除去した実行可能ステートメント列へ変換します。
+     * [EN] Expands `For ... Next` loops using 64-bit bounds, enforces nesting and iteration limits, and strips comments/`Sub`/`End Sub` into flat statements for deterministic full-run and 1-step debugging.
+     * [JA] `For ... Next` ループを64bit整数境界・ネスト深度上限・反復回数上限付きで安全に展開し、コメントや `Sub`/`End Sub` を除去した実行可能ステートメント列へ変換します。
      */
-    fun expandVbaStatements(vbaCode: String): List<String> {
+    fun expandVbaStatements(vbaCode: String): List<String> =
+        expandVbaStatementsInternal(vbaCode, nestingDepth = 0)
+
+    private fun expandVbaStatementsInternal(vbaCode: String, nestingDepth: Int): List<String> {
+        if (nestingDepth >= MAX_VBA_NESTING_DEPTH) return emptyList()
         val rawLines = vbaCode.lines()
             .map { it.trim() }
             .filter { it.isNotEmpty() && !it.startsWith("'") && !it.startsWith("Rem ", ignoreCase = true) }
@@ -221,8 +225,9 @@ object MacroStudioEngine {
                 .find(line)
             if (forMatch != null) {
                 val varName = forMatch.groupValues[1]
-                // [EN] Use Long arithmetic so extreme bounds (e.g. Int.MAX_VALUE or Step -2147483648) never overflow or throw.
-                // [JA] Int.MAX_VALUE 付近や Step -2147483648 (Int.MIN_VALUE) でもオーバーフローや例外が起きないよう Long 演算で安全に展開します。
+                // [EN] Use Long arithmetic so extreme bounds (e.g. Int.MAX_VALUE or Step -2147483648) never overflow or throw,
+                //      and cap iteration count (rather than numeric endpoint span) so `For r = 0 To 1000 Step 10` runs all 101 steps.
+                // [JA] Long 演算でオーバーフローを防ぎつつ、数値幅ではなく反復回数（最大201回）で制限することで `Step 10` 等も正確に展開します。
                 val startVal = (forMatch.groupValues[2].toLongOrNull() ?: 1L).coerceIn(-1_000_000_000_000L, 1_000_000_000_000L)
                 val endVal = (forMatch.groupValues[3].toLongOrNull() ?: startVal).coerceIn(-1_000_000_000_000L, 1_000_000_000_000L)
                 val rawStep = if (forMatch.groupValues[4].isNotEmpty()) {
@@ -247,17 +252,17 @@ object MacroStudioEngine {
                 }
                 val iterValues = mutableListOf<Long>()
                 if (stepVal > 0L) {
-                    val cappedEnd = minOf(endVal, startVal + 200L)
                     var curVal = startVal
-                    while (curVal <= cappedEnd && iterValues.size <= 200) {
+                    while (curVal <= endVal && iterValues.size < MAX_VBA_LOOP_ITERATIONS) {
                         iterValues.add(curVal)
+                        if (curVal > Long.MAX_VALUE - stepVal) break
                         curVal += stepVal
                     }
                 } else if (stepVal < 0L) {
-                    val cappedEnd = maxOf(endVal, startVal - 200L)
                     var curVal = startVal
-                    while (curVal >= cappedEnd && iterValues.size <= 200) {
+                    while (curVal >= endVal && iterValues.size < MAX_VBA_LOOP_ITERATIONS) {
                         iterValues.add(curVal)
+                        if (curVal < Long.MIN_VALUE - stepVal) break
                         curVal += stepVal
                     }
                 }
@@ -267,7 +272,7 @@ object MacroStudioEngine {
                     val subBody = bodyLines.joinToString("\n") { bLine ->
                         substituteVbaLoopVariable(bLine, varName, iterVal)
                     }
-                    val subExpanded = expandVbaStatements(subBody)
+                    val subExpanded = expandVbaStatementsInternal(subBody, nestingDepth = nestingDepth + 1)
                     val remainingBudget = (MAX_EXPANDED_VBA_STATEMENTS - expanded.size).coerceAtLeast(0)
                     expanded.addAll(subExpanded.take(remainingBudget))
                 }
@@ -281,6 +286,8 @@ object MacroStudioEngine {
         return expanded
     }
 
+    private const val MAX_VBA_NESTING_DEPTH = 32
+    private const val MAX_VBA_LOOP_ITERATIONS = 201
     private const val MAX_EXPANDED_VBA_STATEMENTS = 5_000
 
     /**

@@ -3,7 +3,6 @@ import java.io.File
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
-    alias(libs.plugins.kotlin.serialization)
 }
 
 /**
@@ -140,12 +139,19 @@ android {
     }
 
     androidResources {
-        noCompress += listOf("wasm", "xlsx", "csv", "tsv", "ods")
+        noCompress += listOf("xlsx", "csv", "tsv", "ods")
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     packaging {
         resources {
             merges += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/DebugProbesKt.bin"
+            excludes += "/META-INF/version-control-info.textproto"
         }
     }
 }

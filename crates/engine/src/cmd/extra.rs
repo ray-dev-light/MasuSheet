@@ -310,6 +310,8 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             new_cell_style
         ),
+        // [EN] On Android, automation is provided via in-app Macro Studio and AI Assistant rather than COM add-ins or desktop CLI.
+        // [JA] Android 環境では COM アドインやデスクトップ CLI の代わりに、アプリ内のマクロスタジオおよび AI アシスタントを案内します。
         cmd!(query "home.addIns", "Add-ins", ["Home", "Add-ins"], None, "{} → automation extends through scripts and Macro Studio instead of COM add-ins", always, |_, _| Ok(json!({"addIns": [], "hint": "Use Automate › Macro Studio or AI Assistant"}))),
         cmd!(query "formulas.recentlyUsed", "Recently Used", ["Formulas", "Function Library"], None, "{} → recently used functions in this workbook", has_doc, recently_used),
         cmd!(query "formulas.financial", "Financial", ["Formulas", "Function Library"], None, "{}", always, |s, _| s.execute("formulas.functions", json!({"category": "Financial"}))),
@@ -329,7 +331,8 @@ pub fn specs() -> Vec<CommandSpec> {
             use_in_formula
         ),
         cmd!(query "formulas.watchWindow", "Watch Window", ["Formulas", "Formula Auditing"], None, "{add?: \"Sheet1!B5\", remove?: \"…\"} → watched cells with current values", has_doc, watch_window),
-        // Remaining Insert, Data, and Review catalog commands (100% parity)
+        // [EN] Extended Insert, Data, and Review commands backing MasuSheet's 15-tab Android Ribbon UI catalog.
+        // [JA] MasuSheet の Android 用 15 タブリボン UI カタログに対応する挿入・データ・校閲コマンド定義です。
         cmd!(
             "insert.smartArt",
             "SmartArt",
@@ -480,6 +483,8 @@ pub fn specs() -> Vec<CommandSpec> {
 const VIEWS_NAME: &str = "_sc_custom_views";
 const SCRIPTS_NAME: &str = "_sc_scripts";
 const WATCH_NAME: &str = "_sc_watch";
+/// [EN] Hidden defined-name key persisting workbook table-relationship metadata across `.xlsx` saves.
+/// [JA] `.xlsx` 保存・再読込間でテーブル間リレーションシップ定義を保持する非表示定義名キーです。
 const REL_NAME: &str = "_sc_relationships";
 
 /// Workbook-level JSON stored in a hidden defined name (round-trips through XLSX).
@@ -547,11 +552,19 @@ fn insert_smart_art(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.shape", m)
 }
 
-/// [EN] Inserts an image from caller-supplied `base64`/`path`, or falls back to a minimal 1×1
-///      transparent PNG placeholder when invoked headlessly without external image bytes.
-/// [JA] `base64` または `path` 指定の画像を挿入し、未指定時は最小の 1×1 透過 PNG プレースホルダを挿入します。
+/// [EN] Inserts an image from caller-supplied `base64`, or falls back to a minimal 1×1 transparent
+///      PNG placeholder when invoked headlessly without external image bytes. Direct local `path`
+///      reads are rejected on Android so untrusted commands cannot read private app storage.
+/// [JA] `base64` 指定の画像を挿入し、未指定時は最小の 1×1 透過 PNG プレースホルダを挿入します。
+///      Android のアプリ内部領域保護のため、直接のローカル `path` 指定は拒否します。
 fn insert_screenshot(s: &mut Session, p: &Json) -> Result<Json> {
-    if p.get("base64").is_some() || p.get("path").is_some() {
+    if p.get("path").is_some() {
+        return Err(bad(
+            "insert.screenshot",
+            "direct filesystem `path` access is disabled on Android; pass image bytes as `base64`",
+        ));
+    }
+    if p.get("base64").is_some() {
         return s.execute("insert.picture", p.clone());
     }
     // Minimal 1x1 transparent PNG placeholder when invoked without external image bytes
@@ -703,17 +716,24 @@ fn insert_equation(s: &mut Session, p: &Json) -> Result<Json> {
     s.execute("insert.symbol", json!({"char": eq}))
 }
 
-/// [EN] Imports caller-provided CSV `text` or local `path`, rejecting live network fetches so the
-///      calculation engine remains 100% deterministic and offline-safe (no SSRF surface).
-/// [JA] 呼び出し側から渡された CSV `text` またはローカル `path` を取り込みます。SSRF 防止と決定論性維持のため、
-///      エンジン内部からの直接ネットワーク通信は明示的に拒否します。
+/// [EN] Imports caller-provided CSV `text` directly, rejecting both live network fetches and raw
+///      local filesystem `path` reads so the calculation engine remains 100% deterministic,
+///      offline-safe (zero SSRF), and sandboxed on Android.
+/// [JA] 呼び出し側から渡された CSV `text` を取り込みます。SSRF 防止・決定論性維持・Android 内部ストレージ保護のため、
+///      直接ネットワーク通信およびローカル `path` 指定は明示的に拒否します。
 fn from_web(s: &mut Session, p: &Json) -> Result<Json> {
-    if p.get("text").is_some() || p.get("path").is_some() {
+    if p.get("path").is_some() {
+        return Err(bad(
+            "data.fromWeb",
+            "direct filesystem `path` access is disabled on Android; pass CSV content via `text`",
+        ));
+    }
+    if p.get("text").is_some() {
         return from_csv(s, p);
     }
     Err(bad(
         "data.fromWeb",
-        "live web fetch is disabled in the offline engine; pass CSV `text` or local `path`",
+        "live web fetch is disabled in the offline engine; pass CSV `text`",
     ))
 }
 

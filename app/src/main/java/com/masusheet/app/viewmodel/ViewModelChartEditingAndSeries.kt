@@ -12,12 +12,12 @@ import kotlin.math.abs
 
 /**
  * ============================================================================
- * [EN] Chart Sub-Element Selection, Finite Axis Formatting (`C-07`), Drag Range Resize, & Series Editing
- * Handles chart sub-element selection, NaN/Infinity-safe axis formatting (`C-07`), interactive corner/edge range drag updates, row/column swap, and live series/category edits.
+ * [EN] Chart Sub-Element Selection, Finite Axis Formatting, Drag Range Resize, & Series Editing
+ * Handles chart sub-element selection, NaN/Infinity-safe axis formatting, interactive corner/edge range drag updates, row/column swap, and live series/category edits.
  *
  * ---
  * [JA / 日本語解説]
- * グラフ内要素の個別選択、`NaN`/`Infinity` 安全な軸書式設定 (`C-07`)、シート上での参照範囲ドラッグ移動・拡縮、行列入替、系列・項目ラベル編集を担うモジュールです。
+ * グラフ内要素の個別選択、`NaN`/`Infinity` 安全な軸書式設定、シート上での参照範囲ドラッグ移動・拡縮、行列入替、系列・項目ラベル編集を担うモジュールです。
  * ============================================================================
  */
 

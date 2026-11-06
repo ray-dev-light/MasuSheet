@@ -52,7 +52,7 @@ import com.masusheet.app.viewmodel.onUndoLastAiEdit
 /**
  * ============================================================================
  * [EN] AI Spreadsheet Edit Sidebar Panel (3-Mode Workflow)
- * Implements [AiSpreadsheetAssistantPanel] supporting Built-in Script templates, Web AI copy/paste JSON bridge, and Cloud/Local LLM API settings with masked API key input (`H-05`) and per-model IDs (`H-07`).
+ * Implements [AiSpreadsheetAssistantPanel] supporting Built-in Script templates, Web AI copy/paste JSON bridge, and Cloud/Local LLM API settings with masked API key input and per-model IDs.
  *
  * ---
  * [JA / 日本語解説]
@@ -61,7 +61,7 @@ import com.masusheet.app.viewmodel.onUndoLastAiEdit
  */
 
 // ============================================================================
-// 5. GENERAL-PURPOSE AI SPREADSHEET AGENT SIDEBAR PANEL (COPILOT / GEMINI / CLAUDE / GPT / LOCAL)
+// 5. GENERAL-PURPOSE AI SPREADSHEET AGENT SIDEBAR PANEL (GEMINI / CLAUDE / GPT / LOCAL)
 // ============================================================================
 
 /**

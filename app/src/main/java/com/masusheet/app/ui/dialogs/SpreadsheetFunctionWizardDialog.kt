@@ -48,11 +48,11 @@ import com.masusheet.app.ui.ribbon.MasuSheetPillButton
 /**
  * ============================================================================
  * [EN] 523-Function Insert Wizard Dialog (`fx`)
- * Implements [SpreadsheetFunctionWizardDialog] with category filtering, keyword search,Virtualized `LazyColumn` list (`M-05`), and argument signature preview.
+ * Implements [SpreadsheetFunctionWizardDialog] with category filtering, keyword search, virtualized `LazyColumn` list, and argument signature preview.
  *
  * ---
  * [JA / 日本語解説]
- * カテゴリ絞込・キーワード検索・`LazyColumn` 仮想化リスト (`M-05`)・構文プレビューを備えた523関数対応の「関数の挿入 (`fx`)」ウィザード ([SpreadsheetFunctionWizardDialog]) です。
+ * カテゴリ絞込・キーワード検索・`LazyColumn` 仮想化リスト・構文プレビューを備えた523関数対応の「関数の挿入 (`fx`)」ウィザード ([SpreadsheetFunctionWizardDialog]) です。
  * ============================================================================
  */
 

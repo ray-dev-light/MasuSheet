@@ -354,10 +354,12 @@ fn parse_xml_scalar(raw: &str) -> Value {
         .map_or_else(|| Value::from(unescaped), Value::Number)
 }
 
-/// [EN] Evaluates `FILTERXML(xml, xpath)` offline for tag-text paths (`/root/item`, `//price`) and
-///      attribute paths (`//item/@id`) without external network or DTD entity expansion (XXE-safe).
-/// [JA] 外部通信や DTD 展開を行わない安全なオフライン簡易パーサにより、`FILTERXML(xml, xpath)` の要素値および
-///      `@属性` 抽出を実行します（単一結果はスカラ、複数一致時は縦スピル配列を返却）。
+/// [EN] Evaluates `FILTERXML(xml, xpath)` offline for leaf tag-text paths (`/root/item`, `//price`)
+///      and leaf attribute paths (`//item/@id`, including self-closing `<item id="1"/>`) without
+///      external network or DTD entity expansion (XXE-safe). Note: matches the final target tag/attr
+///      linearly rather than evaluating full XPath ancestor chains or index predicates.
+/// [JA] 外部通信や DTD 展開を行わない安全なオフライン簡易パーサにより、`FILTERXML(xml, xpath)` の末尾要素値
+///      および `@属性` 抽出を実行します（階層述語は評価せず末尾タグ名で線形走査し、複数一致時は縦スピル配列を返却）。
 fn filterxml(a: &[Arg], _c: &mut dyn Ctx) -> R<Value> {
     let xml = text(a, 0)?;
     let xpath = text(a, 1)?;
@@ -820,6 +822,11 @@ pub(crate) fn specs() -> Vec<FnSpec> {
         ),
         f!("ENCODEURL", 1, 1, Web, S, "ENCODEURL(text)", "Percent-encodes text for use in a URL.", encodeurl),
         f!("WEBSERVICE", 1, 1, Web, S, "WEBSERVICE(url)", "Fetches data from a web service (not available; returns #VALUE!).", value_err),
+        // [EN] MasuSheet extended worksheet functions for formula catalog parity. Note that XLL/DLL
+        //      foreign-code entry points (`CALL`, `REGISTER.ID`) intentionally return `#VALUE!` on
+        //      Android (`value_err`) so formulas can never load or invoke arbitrary native libraries.
+        // [JA] MasuSheet の関数カタログ互換性を保つ拡張ワークシート関数群です。特に外部 DLL/XLL を呼び出す
+        //      `CALL`・`REGISTER.ID` は、Android 上での任意ネイティブコード実行を防ぐため常に `#VALUE!` を返します。
         f!("FILTERXML", 2, 2, Web, S, "FILTERXML(xml, xpath)", "Extracts data from XML content by using the specified XPath expression.", filterxml),
         f!("DETECTLANGUAGE", 1, 1, Text, S, "DETECTLANGUAGE(text)", "Identifies the language of the specified text and returns its ISO 639-1 code.", detectlanguage),
         f!("TRANSLATE", 1, 3, Text, S, "TRANSLATE(text, [source_language], [target_language])", "Translates common spreadsheet terms offline between English and Japanese.", translate_fn),

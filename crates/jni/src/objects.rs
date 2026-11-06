@@ -216,7 +216,7 @@ pub(crate) fn sync_workbook_objects_json(s: &mut Session, params: &Json) -> Resu
         let si = obj
             .get("sheetIndex")
             .and_then(Json::as_u64)
-            .map_or(0, |v| v as usize);
+            .map_or(0, |v| usize::try_from(v).unwrap_or(usize::MAX));
         if si >= wb.sheets.len() {
             continue;
         }

@@ -1,2 +1,3 @@
-[alias]
-xtask = "run --package xtask --"
+# [EN] Cargo workspace configuration for MasuSheet (desktop `xtask` alias removed).
+# [JA] MasuSheet 用 Cargo ワークスペース設定ファイル（不要なデスクトップ用 `xtask` エイリアスは削除済み）。
+

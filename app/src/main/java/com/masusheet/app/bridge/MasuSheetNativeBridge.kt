@@ -13,6 +13,8 @@ object MasuSheetNativeBridge {
         System.loadLibrary("masusheet_jni")
         true
     } catch (_: Throwable) {
+        // [EN] Catches UnsatisfiedLinkError / SecurityException so pure-JVM unit tests without a native .so fall back cleanly.
+        // [JA] ネイティブ .so が未配置の純粋 JVM テスト環境でも UnsatisfiedLinkError 等を安全に吸収してフォールバック可能にします。
         false
     }
 

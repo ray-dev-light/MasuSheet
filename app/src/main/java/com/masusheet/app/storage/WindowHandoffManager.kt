@@ -10,7 +10,7 @@ import java.util.UUID
  * ============================================================================
  * Module: WindowHandoffManager.kt
  * ============================================================================
- * [EN] Capability-Token Multi-Window Workbook Handoff Store (`C-02` & `C-04` Fix)
+ * [EN] Capability-Token Multi-Window Workbook Handoff Store
  *
  * Replaces raw Intent file paths with strict UUID capability tokens scoped exclusively to
  * `cacheDir/handoff/`. Prevents Confused Deputy arbitrary file read/delete attacks while
@@ -19,7 +19,7 @@ import java.util.UUID
  *
  * ---
  * [JA / 日本語解説]
- * マルチウィンドウ（`:window2` プロセス）間のブック移動・統合を安全に行うハンドオフ管理モジュールです（`C-02`・`C-04` 対応）。
+ * マルチウィンドウ（`:window2` プロセス）間のブック移動・統合を安全に行うハンドオフ管理モジュールです。
  * Intent に生のファイルパスを渡す方式を廃止し、`cacheDir/handoff/` 配下に限定された厳格な UUID トークンのみを受け渡すことで、
  * 外部アプリからの任意ファイル読取・削除（Confused Deputy 脆弱性）を完全に遮断しつつ、
  * グラフ・画像・図形・ピボットテーブル・カスタム書式を含む全状態を欠落なく引き継ぎます。

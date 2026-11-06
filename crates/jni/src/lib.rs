@@ -24,7 +24,7 @@ mod viewport;
 
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use gridcraft_engine::cmd::print::{PrintOptions, layouts, render_pdf};
@@ -43,50 +43,100 @@ use crate::viewport::{ViewportRequest, build_viewport_dto, read_sheet_cells_json
 /// [JA] プロセス内で同時保持するネイティブセッション数の上限です（ハンドル閉じ忘れによるメモリ枯渇を防止）。
 const MAX_CONCURRENT_SESSIONS: usize = 64;
 
+/// [EN] Maximum raw workbook byte payload (`128 MiB`) accepted by [`open_workbook_bytes_session`].
+/// [JA] [`open_workbook_bytes_session`] で受け付けるワークブック生バイト列の最大サイズ上限（`128 MiB`）です。
+const MAX_OPEN_WORKBOOK_BYTES: usize = 128 * 1024 * 1024;
+
+/// [EN] Maximum command parameter JSON byte length (`32 MiB`) accepted before `serde_json::from_str`.
+/// [JA] [`execute_command_session`] が JSON パース前に受け付けるパラメータ文字列の最大バイト長（`32 MiB`）です。
+const MAX_COMMAND_PARAMS_BYTES: usize = 32 * 1024 * 1024;
+
+/// [EN] Maximum JSON nesting depth inspected when rejecting `"path"` parameters.
+/// [JA] `"path"` パラメータ検査で許容する JSON ネストの最大深さです。
+const MAX_JSON_INSPECT_DEPTH: usize = 64;
+
 /// [EN] Minimal static fallback JSON returned if serializing or allocating a large JNI string fails.
 /// [JA] 大規模 JSON 文字列のシリアライズまたは JNI 確保に失敗した際の最小フォールバック応答です。
 const FALLBACK_ERROR_JSON: &str = "{\"ok\":false,\"error\":\"JNI response allocation failed\"}";
 
-/// [EN] Process-global registry of active workbook sessions keyed by positive `session_id` (`0` is
-///      lazily allocated only if a legacy single-session wrapper invokes it).
-/// [JA] 正の `session_id` をキーとして独立した `Session` を保持するグローバルレジストリです。
-static SESSIONS: LazyLock<Mutex<HashMap<i64, Arc<Mutex<Session>>>>> =
+/// [EN] Active session entry pairing an isolated [`Session`] mutex with its last access sequence for LRU eviction.
+/// [JA] 独立した [`Session`] と最終アクセス順序番号（LRU 退避判定用）を保持するエントリです。
+struct SessionEntry {
+    session: Arc<Mutex<Session>>,
+    last_access: u64,
+}
+
+/// [EN] Process-global registry of active workbook sessions keyed by `session_id`:
+///      - `session_id > 0` handles are created explicitly by [`create_session_handle`] and removed by
+///        [`close_session_handle`] (closed handles are never silently resurrected).
+///      - `session_id == 0` is lazily allocated solely for legacy zero-handle JNI wrappers.
+/// [JA] `session_id` をキーとして独立した [`Session`] を保持するグローバルレジストリです。
+///      正の ID は [`create_session_handle`] でのみ生成され、閉じた ID が勝手に空ブックとして復活することはありません
+///      （`0` のみ旧ラッパー互換用に遅延生成されます）。
+static SESSIONS: LazyLock<Mutex<HashMap<i64, SessionEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// [EN] Monotonically increasing positive session handle generator (`1, 2, 3, ...`).
 /// [JA] 単調増加する正のセッション ID 生成カウンタ（`1` 始まり）です。
 static NEXT_SESSION_ID: AtomicI64 = AtomicI64::new(1);
 
-/// [EN] Evicts the lowest positive `session_id` if the session map reaches [`MAX_CONCURRENT_SESSIONS`].
-/// [JA] セッション数が上限 [`MAX_CONCURRENT_SESSIONS`] に達した場合、最も古い正のセッション ID を解放します。
-fn prune_sessions_if_needed(map: &mut HashMap<i64, Arc<Mutex<Session>>>) {
+/// [EN] Monotonically increasing access counter used for LRU eviction when `SESSIONS` reaches capacity.
+/// [JA] セッション上限到達時の LRU（最も長く未アクセスのセッション）退避判定に用いる順序カウンタです。
+static NEXT_ACCESS_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// [EN] Returns the next monotonic LRU access sequence number.
+/// [JA] 次の LRU アクセス順序番号を返します。
+fn next_access_tick() -> u64 {
+    NEXT_ACCESS_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+/// [EN] Evicts the least-recently-used positive `session_id` (`> 0`) if the session map reaches
+///      [`MAX_CONCURRENT_SESSIONS`], preserving actively used open tabs.
+/// [JA] セッション数が [`MAX_CONCURRENT_SESSIONS`] に達した場合、最終アクセスが最も古い正の `session_id` を解放します。
+fn prune_sessions_if_needed(map: &mut HashMap<i64, SessionEntry>) {
     while map.len() >= MAX_CONCURRENT_SESSIONS {
-        let Some(&oldest_id) = map.keys().filter(|&&k| k > 0).min() else {
+        let Some((&lru_id, _)) = map
+            .iter()
+            .filter(|&(&k, _)| k > 0)
+            .min_by_key(|&(_, entry)| entry.last_access)
+        else {
             break;
         };
-        map.remove(&oldest_id);
+        map.remove(&lru_id);
     }
 }
 
-/// [EN] Looks up an existing session handle (`>= 0`), creating a blank workbook session lazily for
-///      valid non-negative handles when needed. Negative handles are rejected (`None`).
-/// [JA] 非負の `session_id` に対応するセッションを取得（未作成時は空ブックで遅延初期化）します。
-///      負の ID は不正ハンドルとして `None` を返します。
-fn get_or_create_session(session_id: i64) -> Option<Arc<Mutex<Session>>> {
+/// [EN] Resolves an active [`Session`] for `session_id`:
+///      - Negative IDs return `None`.
+///      - `0` lazily initializes the legacy fallback session if absent.
+///      - Positive IDs (`> 0`) must already exist in [`SESSIONS`] (never resurrecting closed handles)
+///        and have their LRU `last_access` timestamp refreshed on lookup.
+/// [JA] `session_id` に対応する有効な [`Session`] を解決します。負数およびクローズ済みの正の ID は `None` を返し、
+///      `0` のみ旧単一セッション互換として未作成時に初期化します。
+fn resolve_session(session_id: i64) -> Option<Arc<Mutex<Session>>> {
     if session_id < 0 {
         return None;
     }
     let mut map = SESSIONS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(existing) = map.get(&session_id) {
-        return Some(Arc::clone(existing));
+    if let Some(existing) = map.get_mut(&session_id) {
+        existing.last_access = next_access_tick();
+        return Some(Arc::clone(&existing.session));
     }
-    prune_sessions_if_needed(&mut map);
+    if session_id != 0 {
+        return None;
+    }
     let mut s = Session::new();
     let _ = s.new_workbook();
     let arc = Arc::new(Mutex::new(s));
-    map.insert(session_id, Arc::clone(&arc));
+    map.insert(
+        0,
+        SessionEntry {
+            session: Arc::clone(&arc),
+            last_access: next_access_tick(),
+        },
+    );
     Some(arc)
 }
 
@@ -94,7 +144,7 @@ fn get_or_create_session(session_id: i64) -> Option<Arc<Mutex<Session>>> {
 ///      `"sales"`, `"budget"`, `"grades"`, `"repair"`) and returns its positive `session_id`.
 /// [JA] 指定サンプル（`"blank"` または組み込みサンプル名）で新しい独立セッションを生成し、正の `session_id` を返します。
 pub fn create_session_handle(sample: &str) -> i64 {
-    let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+    let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed).max(1);
     let mut s = Session::new();
     let clean = sample.trim();
     if clean.is_empty()
@@ -107,7 +157,13 @@ pub fn create_session_handle(sample: &str) -> i64 {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     prune_sessions_if_needed(&mut map);
-    map.insert(id, Arc::new(Mutex::new(s)));
+    map.insert(
+        id,
+        SessionEntry {
+            session: Arc::new(Mutex::new(s)),
+            last_access: next_access_tick(),
+        },
+    );
     id
 }
 
@@ -126,8 +182,8 @@ pub fn close_session_handle(session_id: i64) {
 /// [EN] Resets an existing session to a blank or named sample workbook and returns the JSON viewport.
 /// [JA] 指定セッションを空白ブックまたは名前付きサンプルで再初期化し、ビューポート JSON を返します。
 pub fn init_session(session_id: i64, sample: &str) -> String {
-    let Some(arc) = get_or_create_session(session_id) else {
-        return serialize_error_viewport(session_id, "Invalid negative session ID");
+    let Some(arc) = resolve_session(session_id) else {
+        return serialize_error_viewport(session_id, "Session not found or invalid session ID");
     };
     let mut s = arc
         .lock()
@@ -165,12 +221,22 @@ pub fn init_session(session_id: i64, sample: &str) -> String {
 }
 
 /// [EN] Parses `.xlsx` / `.csv` / `.tsv` / `.ods` / `.html` bytes into `session_id`, preserving the
-///      previous document if parsing fails.
-/// [JA] バイト配列からワークブックを読み込みます。破損ファイル等で失敗した場合は開いていた既存ブックを維持します。
+///      previous document if parsing fails or if `raw_bytes` exceeds [`MAX_OPEN_WORKBOOK_BYTES`].
+/// [JA] バイト配列からワークブックを読み込みます。上限超過や破損ファイル等で失敗した場合は既存ブックを維持します。
 pub fn open_workbook_bytes_session(session_id: i64, name: &str, raw_bytes: &[u8]) -> String {
-    let Some(arc) = get_or_create_session(session_id) else {
-        return serialize_error_viewport(session_id, "Invalid negative session ID");
+    let Some(arc) = resolve_session(session_id) else {
+        return serialize_error_viewport(session_id, "Session not found or invalid session ID");
     };
+    if raw_bytes.len() > MAX_OPEN_WORKBOOK_BYTES {
+        return serialize_error_viewport(
+            session_id,
+            format!(
+                "Workbook payload ({} bytes) exceeds maximum allowed limit ({} bytes)",
+                raw_bytes.len(),
+                MAX_OPEN_WORKBOOK_BYTES
+            ),
+        );
+    }
     let safe_name = if name.trim().is_empty() {
         "Book1.xlsx"
     } else {
@@ -211,7 +277,7 @@ pub fn open_workbook_bytes_session(session_id: i64, name: &str, raw_bytes: &[u8]
 ///      bytes and marks lossless saves (`Xlsx` / `Json`) clean (`isDirty = false`).
 /// [JA] セッション内のワークブックを指定拡張子のバイト列へシリアライズし、`.xlsx` 等の完全保存時は未保存フラグを解除します。
 pub fn save_workbook_bytes_session(session_id: i64, name: &str) -> Option<Vec<u8>> {
-    let arc = get_or_create_session(session_id)?;
+    let arc = resolve_session(session_id)?;
     let clean = if name.trim().is_empty() {
         "Book1.xlsx"
     } else {
@@ -240,7 +306,7 @@ pub fn save_workbook_bytes_session(session_id: i64, name: &str) -> Option<Vec<u8
 /// [EN] Renders the active workbook of `session_id` to vector PDF bytes (`%PDF-...`).
 /// [JA] セッション内のワークブックを印刷レイアウト付きベクター PDF バイト列へ出力します。
 pub fn export_pdf_bytes_session(session_id: i64) -> Option<Vec<u8>> {
-    let arc = get_or_create_session(session_id)?;
+    let arc = resolve_session(session_id)?;
     let s = arc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -251,14 +317,66 @@ pub fn export_pdf_bytes_session(session_id: i64) -> Option<Vec<u8>> {
     (!pdf_bytes.is_empty()).then_some(pdf_bytes)
 }
 
+/// [EN] Returns `true` for desktop filesystem commands that must never touch `std::fs` directly on
+///      Android (all Android file open/save/export operations run via Scoped Storage byte arrays).
+/// [JA] Android ではすべてのファイル入出力を Scoped Storage バイト配列経由で行うため、Rust 側の `std::fs` を
+///      直接操作するデスクトップ用ファイルコマンドであるかを判定します。
+fn is_blocked_filesystem_command(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "file.open"
+            | "file.save"
+            | "file.saveAs"
+            | "file.exportCsv"
+            | "file.exportHtml"
+            | "file.exportPdf"
+            | "file.print"
+    )
+}
+
+/// [EN] Recursively inspects `value` (up to [`MAX_JSON_INSPECT_DEPTH`]) and returns `true` if any
+///      JSON object contains a `"path"` key—blocking local file exfiltration or writes via commands
+///      such as `data.fromTextCsv`, `insert.picture`, `pageLayout.background`, or nested scripts,
+///      or if nesting exceeds [`MAX_JSON_INSPECT_DEPTH`].
+/// [JA] JSON パラメータ（ネスト含む）を再帰検査し、ローカルファイル直接アクセスを引き起こす `"path"` キーが含まれる場合
+///      またはネスト深さが [`MAX_JSON_INSPECT_DEPTH`] を超える場合に `true` を返して遮断します。
+fn json_contains_filesystem_path(value: &Json, depth: usize) -> bool {
+    if depth > MAX_JSON_INSPECT_DEPTH {
+        return true;
+    }
+    match value {
+        Json::Object(map) => {
+            if map.contains_key("path") {
+                return true;
+            }
+            map.values()
+                .any(|v| json_contains_filesystem_path(v, depth + 1))
+        }
+        Json::Array(arr) => arr
+            .iter()
+            .any(|v| json_contains_filesystem_path(v, depth + 1)),
+        _ => false,
+    }
+}
+
 /// [EN] Executes a command ID (`cell.set`, `edit.undo`, `jni.readSheetCells`,
 ///      `jni.syncWorkbookObjects`, `jni.readWorkbookObjects`, etc.) on `session_id` and returns
 ///      the updated JSON viewport snapshot.
 /// [JA] 指定セッションに対してエンジンコマンドまたは JNI 専用ブリッジコマンドを実行し、更新後のビューポート JSON を返します。
 pub fn execute_command_session(session_id: i64, cmd: &str, params_str: &str) -> String {
-    let Some(arc) = get_or_create_session(session_id) else {
-        return serialize_error_viewport(session_id, "Invalid negative session ID");
+    let Some(arc) = resolve_session(session_id) else {
+        return serialize_error_viewport(session_id, "Session not found or invalid session ID");
     };
+    if params_str.len() > MAX_COMMAND_PARAMS_BYTES {
+        return serialize_error_viewport(
+            session_id,
+            format!(
+                "Command parameter payload ({} bytes) exceeds maximum limit ({} bytes)",
+                params_str.len(),
+                MAX_COMMAND_PARAMS_BYTES
+            ),
+        );
+    }
     let mut s = arc
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -298,16 +416,55 @@ pub fn execute_command_session(session_id: i64, cmd: &str, params_str: &str) -> 
     serde_json::to_string(&dto).unwrap_or_else(|_| FALLBACK_ERROR_JSON.into())
 }
 
-/// [EN] Routes a parsed command to UI no-ops, JNI helper handlers, or [`Session::execute`].
-/// [JA] 解析済みコマンドを UI 側処理対象・JNI ブリッジ専用ハンドラ・標準エンジンコマンドへ振り分けます。
+/// [EN] Routes a parsed command to UI no-ops, JNI helper handlers, or sandboxed [`Session::execute`].
+/// [JA] 解析済みコマンドをファイルアクセス遮断検査のうえ、UI 側処理対象・JNI ブリッジ専用ハンドラ・標準エンジンコマンドへ振り分けます。
 fn dispatch_session_command(
     s: &mut Session,
     cmd: &str,
     params: Json,
 ) -> (Option<String>, Option<Json>) {
+    if is_blocked_filesystem_command(cmd) {
+        return (
+            Some(format!(
+                "Direct filesystem command `{cmd}` is disabled on Android; use Scoped Storage byte I/O"
+            )),
+            None,
+        );
+    }
+    if json_contains_filesystem_path(&params, 0) {
+        return (
+            Some(format!(
+                "Filesystem `path` parameters are prohibited on Android for `{cmd}`"
+            )),
+            None,
+        );
+    }
+
     match cmd {
-        "app.language.japanese" | "app.language.english" | "view.theme" | "view.interfaceScale" => {
+        "app.language.japanese"
+        | "app.language.english"
+        | "view.theme"
+        | "view.interfaceScale"
+        | "view.useRelativeReferences" => (None, None),
+        "file.markSaved" => {
+            if let Ok(doc) = s.doc_mut() {
+                doc.saved = doc.wb.clone();
+            }
             (None, None)
+        }
+        "home.fontFamily" => {
+            let mut normalized = params;
+            if let Some(obj) = normalized.as_object_mut()
+                && !obj.contains_key("name")
+                && let Some(family) = obj.get("family").cloned()
+            {
+                obj.insert("name".to_string(), family);
+            }
+            match s.execute("home.fontName", normalized) {
+                Ok(v) if !v.is_null() => (None, Some(v)),
+                Ok(_) => (None, None),
+                Err(e) => (Some(e.to_string()), None),
+            }
         }
         "jni.readSheetCells" => match read_sheet_cells_json(s, &params) {
             Ok(v) => (None, Some(v)),
@@ -346,8 +503,8 @@ fn dispatch_session_command(
 /// [EN] Returns the current viewport JSON for `session_id` expanded up to `(max_row, max_col)`.
 /// [JA] 指定セッションのビューポート JSON を `(max_row, max_col)` の要求サイズに合わせて返します。
 pub fn get_viewport_json_session(session_id: i64, max_row: i32, max_col: i32) -> String {
-    let Some(arc) = get_or_create_session(session_id) else {
-        return serialize_error_viewport(session_id, "Invalid negative session ID");
+    let Some(arc) = resolve_session(session_id) else {
+        return serialize_error_viewport(session_id, "Session not found or invalid session ID");
     };
     let s = arc
         .lock()
@@ -821,5 +978,86 @@ mod tests {
 
         close_session_handle(sid);
         close_session_handle(sid2);
+    }
+
+    #[test]
+    fn filesystem_commands_and_path_parameters_are_blocked_and_closed_sessions_do_not_resurrect() {
+        let sid = create_session_handle("blank");
+        let _ = execute_command_session(sid, "cell.set", r#"{"cell":"A1","input":"SecretCheck"}"#);
+
+        // 1. Direct filesystem commands must fail closed on Android
+        for blocked_cmd in [
+            "file.open",
+            "file.save",
+            "file.saveAs",
+            "file.exportCsv",
+            "file.exportHtml",
+            "file.exportPdf",
+            "file.print",
+        ] {
+            let res: Json = serde_json::from_str(&execute_command_session(
+                sid,
+                blocked_cmd,
+                r#"{"name":"out.xlsx"}"#,
+            ))
+            .unwrap();
+            assert_eq!(res["ok"], false, "expected `{blocked_cmd}` to be blocked");
+        }
+
+        // 2. Top-level and nested `"path"` keys must be rejected across all commands
+        for (cmd, payload) in [
+            ("data.fromTextCsv", r#"{"path":"/etc/hosts"}"#),
+            ("data.fromWeb", r#"{"path":"/etc/hosts"}"#),
+            ("insert.picture", r#"{"path":"/etc/hosts"}"#),
+            ("insert.screenshot", r#"{"path":"/etc/hosts"}"#),
+            (
+                "automate.runScript",
+                r#"{"steps":[{"cmd":"data.fromTextCsv","params":{"path":"/etc/hosts"}}]}"#,
+            ),
+        ] {
+            let res: Json =
+                serde_json::from_str(&execute_command_session(sid, cmd, payload)).unwrap();
+            assert_eq!(res["ok"], false, "expected `{cmd}` with `path` to fail");
+        }
+
+        // 3. `file.markSaved` clears `isDirty` and `home.fontFamily` maps cleanly to `home.fontName`
+        let dirty_before: Json =
+            serde_json::from_str(&get_viewport_json_session(sid, 60, 26)).unwrap();
+        assert_eq!(dirty_before["isDirty"], true);
+        let mark_res: Json =
+            serde_json::from_str(&execute_command_session(sid, "file.markSaved", "{}")).unwrap();
+        assert_eq!(mark_res["ok"], true);
+        assert_eq!(mark_res["isDirty"], false);
+
+        let font_res: Json = serde_json::from_str(&execute_command_session(
+            sid,
+            "home.fontFamily",
+            r#"{"range":"A1","family":"Meiryo"}"#,
+        ))
+        .unwrap();
+        assert_eq!(font_res["ok"], true);
+
+        // 4. `u64 >= 2^32` coordinates in `jni.readSheetCells` saturate cleanly instead of wrapping to 0
+        let huge_coord_res: Json = serde_json::from_str(&execute_command_session(
+            sid,
+            "jni.readSheetCells",
+            r#"{"sheet":0,"endRow":4294967296,"endCol":4294967296}"#,
+        ))
+        .unwrap();
+        assert_eq!(huge_coord_res["ok"], true);
+        assert_eq!(
+            huge_coord_res["result"]["cells"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // 5. Closed positive session handles must NOT resurrect as blank sessions
+        close_session_handle(sid);
+        let after_close: Json =
+            serde_json::from_str(&get_viewport_json_session(sid, 60, 26)).unwrap();
+        assert_eq!(after_close["ok"], false);
+        assert!(save_workbook_bytes_session(sid, "Closed.xlsx").is_none());
     }
 }

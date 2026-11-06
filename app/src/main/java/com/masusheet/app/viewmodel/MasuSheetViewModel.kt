@@ -31,11 +31,11 @@ import org.json.JSONObject
 /**
  * ============================================================================
  * [EN] MasuSheet Core ViewModel: StateFlow, Unified Per-Workbook Undo/Redo, Selection, & Clipboard
- * Coordinates [MasuSheetViewModel] state, synchronized Kotlin+Rust Undo/Redo snapshots (`C-10`), custom column/row/style overlays, cell/range selection, AutoFit, and Paste Special (`H-13`).
+ * Coordinates [MasuSheetViewModel] state, synchronized Kotlin+Rust Undo/Redo snapshots, custom column/row/style overlays, cell/range selection, AutoFit, and Paste Special.
  *
  * ---
  * [JA / 日本語解説]
- * 画面全体の状態管理 ([MasuSheetViewModel])、ブック別統合Undo/Redoスタック (`C-10`)、カスタム列幅・行高・書式オーバーレイ、セル選択、自動調整、形式を選択して貼り付け (`H-13`) を担う中核クラスです。
+ * 画面全体の状態管理 ([MasuSheetViewModel])、ブック別統合Undo/Redoスタック、カスタム列幅・行高・書式オーバーレイ、セル選択、自動調整、形式を選択して貼り付け を担う中核クラスです。
  * ============================================================================
  */
 
@@ -212,6 +212,15 @@ class MasuSheetViewModel(
     internal var activeBorderColorArgb: Int = 0
     internal var lastNudgeUndoTimestampMs: Long = 0L
     internal val materializedSampleChartSheetKeys = mutableSetOf<String>()
+    internal data class MacroPreRunSnapshot(
+        val overlay: CustomOverlayUndoSnapshot,
+        val engineDepthBefore: Int,
+        val undoStackBefore: Int,
+        val xlsxBackupBytes: ByteArray?,
+        val workbookTitle: String,
+        val activeSheetIndex: Int
+    )
+    internal val lastMacroPreRunSnapshots = mutableMapOf<String, MacroPreRunSnapshot>()
 
     internal fun hasMaterializedSalesDashboardCharts(sheetIndex: Int): Boolean {
         return "${_uiState.value.activeWorkbookId}:sales_dashboard:$sheetIndex" in materializedSampleChartSheetKeys
@@ -1022,7 +1031,7 @@ class MasuSheetViewModel(
     }
 
     /**
-     * [EN] Pastes copied cells as Values Only, Formulas Only, Formats Only, or Transposed (`H-13`).
+     * [EN] Pastes copied cells as Values Only, Formulas Only, Formats Only, or Transposed.
      * [JA] コピー済みのセル範囲を「値のみ」「数式のみ」「書式のみ」「行列を入れ替える (Transpose)」で貼り付けます。
      */
     fun onPasteSpecial(mode: String = "values", transpose: Boolean = false) {
@@ -1227,7 +1236,7 @@ class MasuSheetViewModel(
     }
 
     /**
-     * [EN] Unhides a hidden worksheet by exact name (`H-02`).
+     * [EN] Unhides a hidden worksheet by exact name.
      * [JA] 非表示になっているシートをシート名指定で再表示します。
      */
     fun onUnhideSheet(sheetName: String) {
@@ -1242,7 +1251,7 @@ class MasuSheetViewModel(
     }
 
     /**
-     * [EN] Dynamically expands the native viewport snapshot when scrolling past the currently loaded row/col horizon (`H-03`).
+     * [EN] Dynamically expands the native viewport snapshot when scrolling past the currently loaded row/col horizon.
      * [JA] スクロール位置が現在ロード済みの行・列の上限に近づいた際、ネイティブエンジンから追加のセル領域を取得します。
      */
     fun onEnsureViewportCoverage(minRows: Int, minCols: Int) {

@@ -17,13 +17,6 @@ import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.widget.OverScroller
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import com.masusheet.app.core.SpreadsheetI18n
 import com.masusheet.app.model.ChartSeries
 import com.masusheet.app.model.GridLayerCacheKey
@@ -1346,7 +1339,7 @@ class MasuSheetNativeGridView(
             freezeCols = freezeCols
         )
 
-        // Dynamically expand viewport coverage when scrolling near the loaded row/col horizon (H-03)
+        // Dynamically expand viewport coverage when scrolling near the loaded row/col horizon
         if (scrollXPx > 0 || scrollYPx > 0) {
             val snap = currentViewport
             val visEndCol = snap.colAtX(pxToPt((scrollXPx + w).toFloat()))

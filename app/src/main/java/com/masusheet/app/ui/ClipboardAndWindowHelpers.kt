@@ -8,11 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Text
 import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.ui.draw.clip
 import com.masusheet.app.MainActivity
 import com.masusheet.app.R
 import com.masusheet.app.SecondaryWorkbookActivity
@@ -42,12 +38,12 @@ val LocalDarkTheme = compositionLocalOf { false }
  */
 fun copyToSystemClipboard(context: Context, text: String) {
     if (text.isEmpty()) return
-    // `C-09`: Clear cached in-process image when copying plain text so subsequent paste inserts the copied text
+    // Clear cached in-process image when copying plain text so subsequent paste inserts the copied text
     lastReceivedClipboardImage = null
     try {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         clipboard?.setPrimaryClip(ClipData.newPlainText("MasuSheet Cell", text))
-    } catch (_: Throwable) {
+    } catch (_: Exception) {
     }
 }
 
@@ -64,10 +60,19 @@ fun readFromSystemClipboard(context: Context): String? {
         } else {
             null
         }
-    } catch (_: Throwable) {
+    } catch (_: Exception) {
         null
     }
 }
+
+/**
+ * [EN] Hard 20 MiB ceiling and pixel-count guard for clipboard/URI image imports to prevent OutOfMemoryError.
+ * [JA] クリップボードおよびURI経由の画像読込における OutOfMemoryError 防止用の上限（20 MiB / 最大 8192px・3200万画素）です。
+ */
+internal const val MAX_CLIPBOARD_IMAGE_BYTES = 20 * 1024 * 1024
+private const val MAX_CLIPBOARD_BASE64_CHARS = (MAX_CLIPBOARD_IMAGE_BYTES * 4) / 3 + 128
+private const val MAX_DECODED_IMAGE_DIMENSION = 8192
+private const val MAX_DECODED_IMAGE_PIXELS = 33_554_432L
 
 @Volatile
 var lastReceivedClipboardImage: Pair<String, ByteArray>? = null
@@ -101,14 +106,14 @@ fun copyImageBytesToSystemClipboard(
             clipboard.setPrimaryClip(clipData)
         }
         true
-    } catch (_: Throwable) {
+    } catch (_: Exception) {
         true
     }
 }
 
 /**
- * [EN] Reads up to 20 MiB of verified image bytes from a `content://` URI (or internal app-owned file), blocking private app-data paths.
- * [JA] `content://` URI から最大20MiBの画像バイト列と表示名を安全に読み取ります（アプリ内部機密領域への不正パスは拒否）。
+ * [EN] Reads up to 20 MiB of verified image bytes from a `content://` URI (or external user file), blocking private app-data paths and decompression bombs.
+ * [JA] `content://` URI から最大20MiBの画像バイト列と表示名を安全に読み取ります（アプリ内部機密領域および過剰解像度画像は拒否）。
  */
 fun readImageBytesFromUri(context: Context, uri: Uri): Pair<String, ByteArray>? {
     val label = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { null } ?: "クリップボード画像.png"
@@ -119,40 +124,59 @@ fun readImageBytesFromUri(context: Context, uri: Uri): Pair<String, ByteArray>? 
             if (ContentResolverDocumentGateway.isInternalPrivateDataFile(context, f)) {
                 return null
             }
+            if (!f.isFile || f.length() > MAX_CLIPBOARD_IMAGE_BYTES.toLong()) {
+                return null
+            }
         }
     }
-    // 1. Direct InputStream via ContentResolver
+    // 1. Bounded InputStream read (strictly <= 20 MiB) via ContentResolver
     val rawBytes = runCatching {
-        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        context.contentResolver.openInputStream(uri)?.use {
+            ContentResolverDocumentGateway.readBoundedStream(it, MAX_CLIPBOARD_IMAGE_BYTES)
+        }
     }.getOrNull() ?: runCatching {
         context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
-            afd.createInputStream().use { it.readBytes() }
+            afd.createInputStream().use {
+                ContentResolverDocumentGateway.readBoundedStream(it, MAX_CLIPBOARD_IMAGE_BYTES)
+            }
         }
     }.getOrNull() ?: runCatching {
         context.contentResolver.openTypedAssetFileDescriptor(uri, "image/*", null)?.use { afd ->
-            afd.createInputStream().use { it.readBytes() }
+            afd.createInputStream().use {
+                ContentResolverDocumentGateway.readBoundedStream(it, MAX_CLIPBOARD_IMAGE_BYTES)
+            }
         }
     }.getOrNull()
 
-    if (rawBytes != null && rawBytes.size > 8) {
+    if (rawBytes != null && rawBytes.size in 9..MAX_CLIPBOARD_IMAGE_BYTES) {
         if (isLikelyImageBytes(rawBytes)) {
             return label to rawBytes
         }
+        if (!hasSafeDecodeBounds(rawBytes)) {
+            return null
+        }
         val bmp = runCatching { BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) }.getOrNull()
         if (bmp != null) {
-            val out = java.io.ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-            val pngBytes = out.toByteArray()
-            if (pngBytes.isNotEmpty()) return label to pngBytes
+            try {
+                val out = java.io.ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                val pngBytes = out.toByteArray()
+                if (pngBytes.isNotEmpty() && pngBytes.size <= MAX_CLIPBOARD_IMAGE_BYTES) {
+                    return label to pngBytes
+                }
+            } finally {
+                bmp.recycle()
+            }
         }
     }
     return null
 }
 
 /**
- * [EN] `C-09` & `C-02`: Reads an image strictly from the active Android system clipboard (`ClipboardManager.primaryClip`).
- *      Never scans MediaStore silently and never opens arbitrary local filesystem paths from plain text.
- * [JA] アクティブなシステムクリップボード（`ClipboardManager.primaryClip`）上の画像のみを安全に読み取ります。
+ * [EN] Reads an image strictly from the active Android system clipboard (`ClipboardManager.primaryClip`).
+ *      Never scans MediaStore silently and never dereferences `content://` or local filesystem paths pasted as plain text.
+ * [JA] アクティブなシステムクリップボード（`ClipboardManager.primaryClip`）上の画像アイテムのみを安全に読み取ります
+ *      （プレーンテキスト内の `content://` 文字列やローカルパスの自動参照は行いません）。
  */
 fun readImageBytesFromSystemClipboard(context: Context): Pair<String, ByteArray>? {
     try {
@@ -174,56 +198,73 @@ fun readImageBytesFromSystemClipboard(context: Context): Pair<String, ByteArray>
             val html = item.htmlText.orEmpty()
             if (html.contains("data:image/", ignoreCase = true) && html.contains(";base64,")) {
                 val b64 = html.substringAfter(";base64,").substringBefore("\"").substringBefore("'")
-                val bytes = runCatching {
-                    android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
-                }.getOrNull()
-                if (bytes != null && bytes.size > 8 && isLikelyImageBytes(bytes)) {
-                    val pair = "クリップボード画像.png" to bytes
-                    lastReceivedClipboardImage = pair
-                    return pair
+                if (b64.length in 12..MAX_CLIPBOARD_BASE64_CHARS) {
+                    val bytes = runCatching {
+                        android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                    }.getOrNull()
+                    if (bytes != null && bytes.size in 9..MAX_CLIPBOARD_IMAGE_BYTES && isLikelyImageBytes(bytes)) {
+                        val pair = "クリップボード画像.png" to bytes
+                        lastReceivedClipboardImage = pair
+                        return pair
+                    }
                 }
             }
             val rawText = item.text?.toString()?.trim().orEmpty()
             if (rawText.startsWith("data:image/", ignoreCase = true) && rawText.contains(";base64,")) {
                 val base64Part = rawText.substringAfter(";base64,")
-                val bytes = runCatching {
-                    android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT)
-                }.getOrNull()
-                if (bytes != null && bytes.size > 8 && isLikelyImageBytes(bytes)) {
-                    val pair = "クリップボード画像.png" to bytes
-                    lastReceivedClipboardImage = pair
-                    return pair
-                }
-            }
-            if (rawText.startsWith("content://", ignoreCase = true)) {
-                val parsedUri = runCatching { Uri.parse(rawText) }.getOrNull()
-                if (parsedUri != null) {
-                    val fromParsed = readImageBytesFromUri(context, parsedUri)
-                    if (fromParsed != null) {
-                        lastReceivedClipboardImage = fromParsed
-                        return fromParsed
+                if (base64Part.length in 12..MAX_CLIPBOARD_BASE64_CHARS) {
+                    val bytes = runCatching {
+                        android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT)
+                    }.getOrNull()
+                    if (bytes != null && bytes.size in 9..MAX_CLIPBOARD_IMAGE_BYTES && isLikelyImageBytes(bytes)) {
+                        val pair = "クリップボード画像.png" to bytes
+                        lastReceivedClipboardImage = pair
+                        return pair
                     }
                 }
             }
         }
-    } catch (_: Throwable) {
+    } catch (_: Exception) {
     }
     return null
 }
 
+private fun hasSafeDecodeBounds(bytes: ByteArray): Boolean {
+    return runCatching {
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        val w = opts.outWidth
+        val h = opts.outHeight
+        w in 1..MAX_DECODED_IMAGE_DIMENSION &&
+            h in 1..MAX_DECODED_IMAGE_DIMENSION &&
+            w.toLong() * h.toLong() <= MAX_DECODED_IMAGE_PIXELS
+    }.getOrDefault(false)
+}
+
 /**
- * [EN] Checks magic-byte signatures for PNG, JPEG, GIF, WebP (`RIFF....WEBP`), and BMP headers.
- * [JA] 先頭マジックバイトから PNG・JPEG・GIF・WebP・BMP の有効な画像バイナリであるかを判定します。
+ * [EN] Checks magic-byte signatures for PNG, JPEG, GIF, WebP (`RIFF....WEBP`), and BMP headers, using bounds-only probing as fallback.
+ * [JA] 先頭マジックバイトおよび `inJustDecodeBounds` 境界検査から PNG・JPEG・GIF・WebP・BMP の安全な画像バイナリであるかを判定します。
  */
 internal fun isLikelyImageBytes(bytes: ByteArray): Boolean {
-    if (bytes.size < 8) return false
-    // PNG magic: 89 50 4E 47
+    if (bytes.size < 8 || bytes.size > MAX_CLIPBOARD_IMAGE_BYTES) return false
+    // PNG magic: 89 50 4E 47 0D 0A 1A 0A
     if (bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()) {
-        return true
+        val dims = com.masusheet.app.core.MasuSheetConfig.decodeImageDimensions(bytes)
+        return dims == null || (dims.first in 1..MAX_DECODED_IMAGE_DIMENSION && dims.second in 1..MAX_DECODED_IMAGE_DIMENSION && dims.first.toLong() * dims.second.toLong() <= MAX_DECODED_IMAGE_PIXELS)
     }
     // JPEG magic: FF D8 FF
     if (bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()) {
-        return true
+        val dims = com.masusheet.app.core.MasuSheetConfig.decodeImageDimensions(bytes)
+        return dims == null || (dims.first in 1..MAX_DECODED_IMAGE_DIMENSION && dims.second in 1..MAX_DECODED_IMAGE_DIMENSION && dims.first.toLong() * dims.second.toLong() <= MAX_DECODED_IMAGE_PIXELS)
+    }
+    // GIF magic: "GIF87a" or "GIF89a"
+    if (bytes.size >= 10 &&
+        bytes[0] == 'G'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte() &&
+        bytes[3] == '8'.code.toByte() && (bytes[4] == '7'.code.toByte() || bytes[4] == '9'.code.toByte()) &&
+        bytes[5] == 'a'.code.toByte()
+    ) {
+        val dims = com.masusheet.app.core.MasuSheetConfig.decodeImageDimensions(bytes)
+        return dims != null && dims.first in 1..MAX_DECODED_IMAGE_DIMENSION && dims.second in 1..MAX_DECODED_IMAGE_DIMENSION && dims.first.toLong() * dims.second.toLong() <= MAX_DECODED_IMAGE_PIXELS
     }
     // WEBP magic: "RIFF"...."WEBP"
     if (bytes.size >= 12 &&
@@ -232,9 +273,14 @@ internal fun isLikelyImageBytes(bytes: ByteArray): Boolean {
         bytes[8] == 'W'.code.toByte() && bytes[9] == 'E'.code.toByte() &&
         bytes[10] == 'B'.code.toByte() && bytes[11] == 'P'.code.toByte()
     ) {
-        return true
+        val dims = com.masusheet.app.core.MasuSheetConfig.decodeImageDimensions(bytes)
+        return dims == null || (dims.first in 1..MAX_DECODED_IMAGE_DIMENSION && dims.second in 1..MAX_DECODED_IMAGE_DIMENSION && dims.first.toLong() * dims.second.toLong() <= MAX_DECODED_IMAGE_PIXELS)
     }
-    return runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) != null }.getOrDefault(false)
+    // BMP magic: "BM"
+    if (bytes.size >= 26 && bytes[0] == 'B'.code.toByte() && bytes[1] == 'M'.code.toByte()) {
+        return hasSafeDecodeBounds(bytes)
+    }
+    return hasSafeDecodeBounds(bytes)
 }
 
 /**
@@ -262,7 +308,7 @@ internal fun launchNewWorkbookWindow(context: Context, blankWorkbook: Boolean = 
 
 /**
  * [EN] Launches a specific [OpenWorkbookSession] in an isolated `SecondaryWorkbookActivity` window (`:window2` process)
- *      using `WindowHandoffManager` UUID capability tokens (`C-02` & `C-04`).
+ *      using `WindowHandoffManager` UUID capability tokens.
  * [JA] 指定したブックタブ（[OpenWorkbookSession]）を UUID トークン方式で安全に独立ウィンドウ（`SecondaryWorkbookActivity`）へ起動します。
  */
 internal fun launchWorkbookSessionInNewWindow(context: Context, session: OpenWorkbookSession) {
@@ -286,7 +332,7 @@ internal fun launchWorkbookSessionInNewWindow(context: Context, session: OpenWor
 
 /**
  * [EN] Merges a detached workbook session from `SecondaryWorkbookActivity` back into the primary `MainActivity`
- *      window (`singleTask`) as a workbook tab via `WindowHandoffManager` UUID tokens (`C-02` & `C-04`).
+ *      window (`singleTask`) as a workbook tab via `WindowHandoffManager` UUID tokens.
  * [JA] 別ウィンドウ (`SecondaryWorkbookActivity`) に分離されたブックを UUID トークン方式で元のメインウィンドウへ戻して統合します。
  */
 internal fun mergeWorkbookSessionIntoMainWindow(
@@ -335,7 +381,7 @@ internal fun registerShelfWindowShortcuts(context: Context) {
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP
 
-        // `M-12`: Dynamic launcher shortcuts target exported MainActivity and forward safely to internal SecondaryWorkbookActivity
+        // Dynamic launcher shortcuts target exported MainActivity and forward safely to internal SecondaryWorkbookActivity
         val newWinIntent = Intent(context, MainActivity::class.java).apply {
             action = Intent.ACTION_VIEW
             data = Uri.parse("masusheet://shortcut/new_window")

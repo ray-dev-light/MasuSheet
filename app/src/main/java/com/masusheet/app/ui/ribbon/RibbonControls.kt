@@ -51,7 +51,7 @@ import kotlin.math.min
 /**
  * ============================================================================
  * [EN] Reusable Ribbon Buttons, Dropdown Popups, & Hover-Tooltip Controls
- * Provides [MasuSheetPillButton], [SpreadsheetRibbonDropdownPopup], [SpreadsheetRibbonGroup], [SpreadsheetTallRibbonButton], [SpreadsheetSmallIconBtn], and accessible icon semantics (`L-08`).
+ * Provides [MasuSheetPillButton], [SpreadsheetRibbonDropdownPopup], [SpreadsheetRibbonGroup], [SpreadsheetTallRibbonButton], [SpreadsheetSmallIconBtn], and accessible icon semantics.
  *
  * ---
  * [JA / 日本語解説]
