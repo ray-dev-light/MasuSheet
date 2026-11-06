@@ -9,17 +9,25 @@
 
 ![MasuSheet の日本語ワークスペース画面（条件付き書式テーブル・2階層ピボットテーブル・フィールドペイン・AIアシスタント）](./docs/screenshots/masusheet-pivot-ai-ja.jpg)
 
-### 画面ギャラリー
-
-| 15タブリボン・範囲ハイライト付き散布図・右クリックメニュー | ダークモード ＆ マクロ・VBAスタジオ |
-| :---: | :---: |
-| ![散布図グラフとセル範囲ハイライト](./docs/screenshots/masusheet-overview.png) | ![ダークモードとマクロ・VBAスタジオ](./docs/screenshots/masusheet-macro-dark.png) |
-
-<p align="center">
-  <img src="./docs/screenshots/masusheet-mobile-formula.png" width="260" alt="MasuSheet スマートフォン表示（リボン折りたたみ＆リアルタイム関数サジェスト）" />
-  <br />
-  <em>スマートフォン表示 — リボン1タップ折りたたみで広いセル領域を確保＆リアルタイム関数サジェスト</em>
-</p>
+<table>
+  <tr>
+    <td width="42.5%" align="center" valign="top">
+      <img src="./docs/screenshots/masusheet-overview.png" alt="15タブリボン・範囲ハイライト付き散布図・右クリックメニュー" />
+      <br />
+      <sub>15タブリボン ＆ 散布図グラフ</sub>
+    </td>
+    <td width="42.5%" align="center" valign="top">
+      <img src="./docs/screenshots/masusheet-macro-dark.png" alt="ダークモードとマクロ・VBAスタジオ" />
+      <br />
+      <sub>ダークモード ＆ マクロ・VBA</sub>
+    </td>
+    <td width="15%" align="center" valign="top">
+      <img src="./docs/screenshots/masusheet-mobile-formula.png" alt="MasuSheet スマートフォン表示（リボン折りたたみ＆リアルタイム関数サジェスト）" />
+      <br />
+      <sub>スマホ表示</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 

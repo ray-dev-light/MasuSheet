@@ -9,17 +9,25 @@
 
 ![MasuSheet workspace with 15-tab ribbon, interactive XY scatter chart with on-sheet range highlights, and cell context menu](./docs/screenshots/masusheet-overview.png)
 
-### Interface & Workflow Gallery
-
-| PivotTable, Conditional Formatting & AI Assistant (Japanese UI) | Dark Mode & Macro / VBA Automation Studio |
-| :---: | :---: |
-| ![PivotTable and AI Assistant in Japanese UI](./docs/screenshots/masusheet-pivot-ai-ja.jpg) | ![Dark Mode Macro and VBA Studio](./docs/screenshots/masusheet-macro-dark.png) |
-
-<p align="center">
-  <img src="./docs/screenshots/masusheet-mobile-formula.png" width="260" alt="MasuSheet smartphone layout with collapsed ribbon and live formula auto-complete" />
-  <br />
-  <em>Smartphone layout — 1-tap collapsible ribbon and live 523-function auto-complete</em>
-</p>
+<table>
+  <tr>
+    <td width="42.5%" align="center" valign="top">
+      <img src="./docs/screenshots/masusheet-pivot-ai-ja.jpg" alt="PivotTable and AI Assistant in Japanese UI" />
+      <br />
+      <sub>PivotTable &amp; AI Assistant (JA UI)</sub>
+    </td>
+    <td width="42.5%" align="center" valign="top">
+      <img src="./docs/screenshots/masusheet-macro-dark.png" alt="Dark Mode Macro and VBA Studio" />
+      <br />
+      <sub>Dark Mode &amp; Macro / VBA Studio</sub>
+    </td>
+    <td width="15%" align="center" valign="top">
+      <img src="./docs/screenshots/masusheet-mobile-formula.png" alt="MasuSheet smartphone layout with collapsed ribbon and live formula auto-complete" />
+      <br />
+      <sub>Smartphone</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
