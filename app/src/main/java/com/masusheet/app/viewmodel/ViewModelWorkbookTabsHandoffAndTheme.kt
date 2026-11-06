@@ -861,6 +861,10 @@ fun MasuSheetViewModel.onToggleLanguage() {
     )
     val cmd = if (isEn) "app.language.english" else "app.language.japanese"
     dispatchCommand(cmd)
+    val pivotsToRefresh = _uiState.value.pivotTables.map { it.id }
+    for (pid in pivotsToRefresh) {
+        materializePivotTable(pid)
+    }
 }
 
 /**

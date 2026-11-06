@@ -339,26 +339,41 @@ internal fun MasuSheetViewModel.shiftFormulaReferences(
  * Automatically excludes `合計` / `Total` / `Average` footer rows from `dataStartRow..dataEndRow` so sorting and filtering
  * never move or hide the total row.
  */
-fun MasuSheetViewModel.detectTableBoundsAt(vp: NativeViewportSnapshot, row: Int, col: Int): IntArray {
+fun MasuSheetViewModel.detectTableBoundsAt(
+    vp: NativeViewportSnapshot,
+    row: Int,
+    col: Int,
+    excludePivotFootprints: Boolean = false
+): IntArray {
     val isSalesDashboard = vp.cellAt(1, 1)?.displayText == "Quarterly Sales Dashboard"
     if (isSalesDashboard && (row in 3..10 && col in 1..8 || (row == 0 && col == 0))) {
         return intArrayOf(3, 4, 7, 1, 8)
     }
     val isMonthlyBudget = vp.cellAt(0, 0)?.displayText == "月間予算表" || vp.sheetName == "月間予算"
     if (isMonthlyBudget) {
-        if (row in 10..18 && col in 7..10) {
+        if (!excludePivotFootprints && row in 10..18 && col in 7..10) {
             return intArrayOf(10, 11, 17, 7, 10)
         }
-        if (row in 10..24 && col in 0..5) {
+        if (row in 10..24 && col in 0..5 || excludePivotFootprints) {
             return intArrayOf(10, 11, 23, 0, 5)
         }
     }
 
-    // If (row, col) is blank, find the nearest populated cell on the current sheet (preferring numeric table cells)
+    val pivotsOnSheet = if (excludePivotFootprints) {
+        _uiState.value.pivotTables.filter { it.targetSheetIndex == vp.sheetIndex }
+    } else {
+        emptyList()
+    }
+    fun isAllowedCell(r: Int, c: Int): Boolean {
+        if (pivotsOnSheet.any { it.containsCell(vp.sheetIndex, r, c) }) return false
+        return !vp.cellAt(r, c)?.displayText.isNullOrBlank()
+    }
+
+    // If (row, col) is blank or inside an excluded PivotTable, find the nearest populated non-pivot cell
     var seedR = row.coerceAtLeast(0)
     var seedC = col.coerceAtLeast(0)
-    if (vp.cellAt(seedR, seedC)?.displayText.isNullOrBlank()) {
-        val nonBlankCells = vp.cells.values.filter { !it.displayText.isBlank() }
+    if (!isAllowedCell(seedR, seedC)) {
+        val nonBlankCells = vp.cells.values.filter { !it.displayText.isBlank() && isAllowedCell(it.row, it.col) }
         if (nonBlankCells.isNotEmpty()) {
             val numericCells = nonBlankCells.filter { parseNumericCell(it) != null }
             val candidates = numericCells.ifEmpty { nonBlankCells }
@@ -374,42 +389,73 @@ fun MasuSheetViewModel.detectTableBoundsAt(vp: NativeViewportSnapshot, row: Int,
         }
     }
 
-    // Generic 2D connected table detection around (seedR, seedC)
     val maxColIdx = (vp.colWidths.size - 1).coerceAtLeast(seedC)
     val maxRowIdx = (vp.rowHeights.size - 1).coerceAtLeast(seedR + 1)
     val hiddenSet = _uiState.value.filteredHiddenRows[vp.sheetIndex].orEmpty()
 
-    var hdrR = seedR
-    var dataEnd = seedR
-    var c0 = seedC
-    var c1 = seedC
+    fun floodBoundsFrom(startR: Int, startC: Int): IntArray {
+        var hdrR = startR
+        var dataEnd = startR
+        var c0 = startC
+        var c1 = startC
+        for (pass in 0..2) {
+            while (c0 > 0 && (hdrR..dataEnd).any { r -> isAllowedCell(r, c0 - 1) }) {
+                c0--
+            }
+            while (c1 < maxColIdx && (hdrR..dataEnd).any { r -> isAllowedCell(r, c1 + 1) }) {
+                c1++
+            }
+            while (hdrR > 0 && (c0..c1).any { cc -> isAllowedCell(hdrR - 1, cc) }) {
+                hdrR--
+            }
+            while (dataEnd < maxRowIdx) {
+                val nextR = dataEnd + 1
+                val hasAny = nextR in hiddenSet || (c0..c1).any { cc -> isAllowedCell(nextR, cc) }
+                if (!hasAny) break
+                dataEnd = nextR
+            }
+        }
+        return intArrayOf(hdrR, dataEnd, c0, c1)
+    }
 
-    for (pass in 0..2) {
-        while (c0 > 0 && (hdrR..dataEnd).any { r -> !vp.cellAt(r, c0 - 1)?.displayText.isNullOrBlank() }) {
-            c0--
-        }
-        while (c1 < maxColIdx && (hdrR..dataEnd).any { r -> !vp.cellAt(r, c1 + 1)?.displayText.isNullOrBlank() }) {
-            c1++
-        }
-        while (hdrR > 0 && (c0..c1).any { cc -> !vp.cellAt(hdrR - 1, cc)?.displayText.isNullOrBlank() }) {
-            hdrR--
-        }
-        while (dataEnd < maxRowIdx) {
-            val nextR = dataEnd + 1
-            val hasAny = nextR in hiddenSet || (c0..c1).any { cc -> !vp.cellAt(nextR, cc)?.displayText.isNullOrBlank() }
-            if (!hasAny) break
-            dataEnd = nextR
+    var raw = floodBoundsFrom(seedR, seedC)
+    var hdrR = raw[0]
+    var dataEnd = raw[1]
+    var c0 = raw[2]
+    var c1 = raw[3]
+
+    // Skip 1-row KPI cards (e.g. A4:F4) or 2-row merged Title banners (e.g. A1:G2) if a real multi-row table exists below
+    val hdrPopulatedCols = (c0..c1).count { isAllowedCell(hdrR, it) }
+    val isDegenerateBannerOrKpi = dataEnd <= hdrR || (dataEnd - hdrR == 1 && hdrPopulatedCols <= 1)
+    if (isDegenerateBannerOrKpi) {
+        val altSeed = vp.cells.values
+            .filter { c ->
+                !c.displayText.isBlank() &&
+                    isAllowedCell(c.row, c.col) &&
+                    (c.row !in hdrR..dataEnd || c.col !in c0..c1) &&
+                    parseNumericCell(c) != null
+            }
+            .sortedWith(compareBy<NativeCellModel> { it.row }.thenBy { it.col })
+            .firstOrNull { cand ->
+                val b = floodBoundsFrom(cand.row, cand.col)
+                (b[1] - b[0]) >= 2 && (b[3] - b[2]) >= 1
+            }
+        if (altSeed != null) {
+            raw = floodBoundsFrom(altSeed.row, altSeed.col)
+            hdrR = raw[0]
+            dataEnd = raw[1]
+            c0 = raw[2]
+            c1 = raw[3]
         }
     }
 
-    if (dataEnd == hdrR && (c0..c1).all { cc -> vp.cellAt(hdrR, cc)?.displayText.isNullOrBlank() }) {
+    if (dataEnd == hdrR && (c0..c1).all { cc -> !isAllowedCell(hdrR, cc) }) {
         dataEnd = (hdrR + 1).coerceAtMost(maxRowIdx)
     }
 
     while (dataEnd > hdrR + 1) {
         val firstColTxt = vp.cellAt(dataEnd, c0)?.displayText?.trim().orEmpty()
-        val isFooter = firstColTxt in setOf("合計", "総計", "小計", "平均", "Total", "Grand Total", "Subtotal", "Average")
-        if (isFooter) {
+        if (isSummaryFooterRowLabel(firstColTxt)) {
             dataEnd--
         } else {
             break
@@ -417,6 +463,47 @@ fun MasuSheetViewModel.detectTableBoundsAt(vp: NativeViewportSnapshot, row: Int,
     }
     val dataStart = (hdrR + 1).coerceAtMost(dataEnd)
     return intArrayOf(hdrR, dataStart, dataEnd, c0, c1)
+}
+
+/**
+ * [EN] Returns `true` when `rawText` is a summary/footer row label (e.g. `合計`, `合計 / 集計`, `全体合計`, `総計`, `小計`, `Total`, `Grand Total`) that should not be ingested as a source detail record.
+ * [JA] 表末尾の集計行ラベル（`合計`・`合計 / 集計`・`全体合計`・`総計`・`小計`・`Total` 等）であるかを判定します。
+ */
+internal fun isSummaryFooterRowLabel(rawText: String): Boolean {
+    val t = rawText.trim()
+    if (t.isEmpty()) return false
+    if (t.equals("合計", ignoreCase = true) ||
+        t.equals("総計", ignoreCase = true) ||
+        t.equals("小計", ignoreCase = true) ||
+        t.equals("平均", ignoreCase = true) ||
+        t.equals("全体合計", ignoreCase = true) ||
+        t.equals("全体集計", ignoreCase = true) ||
+        t.equals("合計 / 集計", ignoreCase = true) ||
+        t.equals("合計/集計", ignoreCase = true) ||
+        t.equals("集計", ignoreCase = true) ||
+        t.equals("Total", ignoreCase = true) ||
+        t.equals("Grand Total", ignoreCase = true) ||
+        t.equals("Subtotal", ignoreCase = true) ||
+        t.equals("Average", ignoreCase = true)
+    ) {
+        return true
+    }
+    val lower = t.lowercase()
+    return t.startsWith("合計 ") ||
+        t.startsWith("合計/") ||
+        t.startsWith("合計（") ||
+        t.startsWith("合計(") ||
+        t.startsWith("平均 ") ||
+        t.startsWith("平均/") ||
+        t.endsWith(" 小計") ||
+        t.endsWith(" 合計") ||
+        t.endsWith(" 集計") ||
+        lower.startsWith("total ") ||
+        lower.startsWith("total (") ||
+        lower.startsWith("subtotal ") ||
+        lower.startsWith("average ") ||
+        lower.endsWith(" subtotal") ||
+        lower.endsWith(" grand total")
 }
 
 /**

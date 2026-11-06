@@ -546,27 +546,92 @@ internal fun MasuSheetNativeGridView.drawInCellSparkline(canvas: Canvas, rect: R
 }
 
 /**
- * [EN] Softens bright pastel cell fill colors in Dark Mode while preserving saturated accent fills and Light Mode colors verbatim.
- * [JA] ダークモード表示時に淡いパステル背景色の輝度を抑えて白文字の視認性を確保し、ライトモード時は元の色をそのまま返します。
+ * [EN] Pure helper that adapts bright neutral and soft pastel cell fills for Dark Mode while keeping vivid accents and Light Mode colors intact.
+ * [JA] ダークモード時に白系・淡いパステル系のセル背景を落ち着いたダーク配色へ変換し、鮮やかな強調色やライトモード時はそのまま保持します。
  */
-internal fun MasuSheetNativeGridView.adjustCellBgForTheme(argb: Int, darkTheme: Boolean): Int {
-    if (!darkTheme) return argb
+internal fun computeAdjustedCellBgForTheme(argb: Int, darkTheme: Boolean): Int {
+    if (!darkTheme || argb == 0) return argb
     val r = (argb ushr 16) and 0xFF
     val g = (argb ushr 8) and 0xFF
     val b = argb and 0xFF
     val lum = (r * 299 + g * 587 + b * 114) / 1000
     val maxCh = maxOf(r, g, b)
     val minCh = minOf(r, g, b)
-    // Only darken near-white neutral backgrounds in Dark Theme; preserve all colored/saturated fills!
-    return if (lum > 235 && (maxCh - minCh) < 18) {
-        val dr = (r * 0.22f).roundToInt().coerceIn(0, 255)
-        val dg = (g * 0.26f).roundToInt().coerceIn(0, 255)
-        val db = (b * 0.24f).roundToInt().coerceIn(0, 255)
-        (0xFF shl 24) or (dr shl 16) or (dg shl 8) or db
-    } else {
-        argb
+    val chroma = maxCh - minCh
+    return when {
+        // Near-white / neutral grays (#FFFFFF, #F8FAFC, #F1F5F9, #E7E6E6): map to subtle elevated dark surfaces
+        lum >= 220 && chroma < 24 -> {
+            val shadeStep = (255 - lum).coerceIn(0, 35)
+            val dr = (24 + shadeStep * 0.7f).roundToInt().coerceIn(20, 64)
+            val dg = (32 + shadeStep * 0.8f).roundToInt().coerceIn(26, 74)
+            val db = (40 + shadeStep * 0.9f).roundToInt().coerceIn(32, 86)
+            (0xFF shl 24) or (dr shl 16) or (dg shl 8) or db
+        }
+        // Soft pastel table/pivot/banner tints (#D9E1F2, #EDF2FA, #ECFDF5, #CCFBF1): keep hue, lower glare
+        lum >= 195 && chroma < 85 -> {
+            val dr = (r * 0.16f + (r - minCh) * 0.35f + 14f).roundToInt().coerceIn(20, 95)
+            val dg = (g * 0.16f + (g - minCh) * 0.35f + 16f).roundToInt().coerceIn(22, 100)
+            val db = (b * 0.16f + (b - minCh) * 0.35f + 18f).roundToInt().coerceIn(24, 105)
+            (0xFF shl 24) or (dr shl 16) or (dg shl 8) or db
+        }
+        else -> argb
     }
 }
+
+/**
+ * [EN] Resolves a readable foreground text color against the cell's rendered background in both Light and Dark themes.
+ * [JA] ライト／ダーク両テーマにおいて、描画されるセル背景輝度に対して十分なコントラストを持つ文字色を決定します。
+ */
+internal fun resolveCellTextColorForTheme(
+    rawFgColor: Int,
+    rawBgColor: Int,
+    darkTheme: Boolean,
+    sheetBg: Int,
+    defaultTextCol: Int
+): Int {
+    val renderedBg = if (rawBgColor != 0) computeAdjustedCellBgForTheme(rawBgColor, darkTheme) else sheetBg
+    val bgR = (renderedBg ushr 16) and 0xFF
+    val bgG = (renderedBg ushr 8) and 0xFF
+    val bgB = renderedBg and 0xFF
+    val bgLum = (bgR * 299 + bgG * 587 + bgB * 114) / 1000
+
+    if (rawFgColor == 0) {
+        return when {
+            darkTheme && bgLum > 155 -> 0xFF0F172A.toInt()
+            !darkTheme && rawBgColor != 0 && bgLum < 75 -> 0xFFFFFFFF.toInt()
+            else -> defaultTextCol
+        }
+    }
+    if (!darkTheme) return rawFgColor
+
+    val fgR = (rawFgColor ushr 16) and 0xFF
+    val fgG = (rawFgColor ushr 8) and 0xFF
+    val fgB = rawFgColor and 0xFF
+    val fgLum = (fgR * 299 + fgG * 587 + fgB * 114) / 1000
+    val fgChroma = maxOf(fgR, fgG, fgB) - minOf(fgR, fgG, fgB)
+
+    return when {
+        bgLum < 110 && fgLum < 105 -> {
+            if (fgChroma < 48) {
+                defaultTextCol
+            } else {
+                val lr = (fgR + (255 - fgR) * 0.58f).roundToInt().coerceIn(0, 255)
+                val lg = (fgG + (255 - fgG) * 0.58f).roundToInt().coerceIn(0, 255)
+                val lb = (fgB + (255 - fgB) * 0.58f).roundToInt().coerceIn(0, 255)
+                (0xFF shl 24) or (lr shl 16) or (lg shl 8) or lb
+            }
+        }
+        bgLum > 165 && fgLum > 185 -> 0xFF0F172A.toInt()
+        else -> rawFgColor
+    }
+}
+
+/**
+ * [EN] Softens bright pastel cell fill colors in Dark Mode while preserving saturated accent fills and Light Mode colors verbatim.
+ * [JA] ダークモード表示時に淡いパステル背景色の輝度を抑えて白文字の視認性を確保し、ライトモード時は元の色をそのまま返します。
+ */
+internal fun MasuSheetNativeGridView.adjustCellBgForTheme(argb: Int, darkTheme: Boolean): Int =
+    computeAdjustedCellBgForTheme(argb, darkTheme)
 
 /**
  * [EN] Draws the top, right, bottom, and left borders of `cell` around `rect` when encoded border metadata is non-zero.
@@ -654,11 +719,14 @@ fun MasuSheetNativeGridView.wrapTextIntoLines(text: String, maxWidthPx: Float, p
  */
 internal fun MasuSheetNativeGridView.drawCellContent(canvas: Canvas, rect: RectF, cell: NativeCellModel, defaultTextCol: Int) {
     val text = if (showFormulas && cell.editText.isNotEmpty()) cell.editText else cell.displayText
-    val fgColor = if (cell.fgColor != 0) {
-        if (isDarkTheme && (cell.fgColor and 0xFFFFFF) == 0x000000) defaultTextCol else cell.fgColor
-    } else {
-        defaultTextCol
-    }
+    val sheetBg = if (isDarkTheme) 0xFF14181D.toInt() else 0xFFFFFFFF.toInt()
+    val fgColor = resolveCellTextColorForTheme(
+        rawFgColor = cell.fgColor,
+        rawBgColor = cell.bgColor,
+        darkTheme = isDarkTheme,
+        sheetBg = sheetBg,
+        defaultTextCol = defaultTextCol
+    )
 
     textPaint.color = fgColor
     textPaint.textSize = (cell.fontSize.coerceIn(8f, 28f)) * density * zoomScale

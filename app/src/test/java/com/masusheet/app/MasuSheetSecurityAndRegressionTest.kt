@@ -1328,4 +1328,73 @@ class MasuSheetSecurityAndRegressionTest {
             assertEquals(145f, uiState.value.viewport.colWidths[0], 0.01f)
         }
     }
+
+    @Test
+    fun inventoryTemplatePivotFormattingTotalsColumnWidthAndMacroI18nRegression() {
+        val repo = MasuSheetPreferencesRepository(FakePreferenceStore(), InMemorySecretStore())
+        val engineGw = if (com.masusheet.app.bridge.MasuSheetNativeBridge.isNativeLoaded) {
+            RustJniEngineGateway()
+        } else {
+            InMemoryFallbackEngineGateway()
+        }
+        val vm = MasuSheetViewModel(
+            preferencesRepository = repo,
+            documentGateway = FakeDocumentIoGateway(),
+            engineGateway = engineGw,
+            startWithBlankWorkbook = true
+        )
+        vm.onSelectAiEditMode("allow_edit")
+        vm.onSendAiPrompt("在庫・発注管理シートを作成して")
+
+        val vpAfterAi = vm.uiState.value.viewport
+        // 1. Green table: monetary columns (B=単価, E=在庫金額) have ¥; quantity columns (C=現在庫数, D=発注点) have NO ¥
+        val b8 = vpAfterAi.cellAt(7, 1)?.displayText.orEmpty()
+        val c8 = vpAfterAi.cellAt(7, 2)?.displayText.orEmpty()
+        val d8 = vpAfterAi.cellAt(7, 3)?.displayText.orEmpty()
+        val e8 = vpAfterAi.cellAt(7, 4)?.displayText.orEmpty()
+        val c14 = vpAfterAi.cellAt(13, 2)?.displayText.orEmpty()
+        val d14 = vpAfterAi.cellAt(13, 3)?.displayText.orEmpty()
+        val e14 = vpAfterAi.cellAt(13, 4)?.displayText.orEmpty()
+
+        assertTrue("Unit price B8 should display ¥, got: $b8", b8.startsWith("¥"))
+        assertTrue("Stock amount E8 should display ¥, got: $e8", e8.startsWith("¥"))
+        assertEquals("¥1,302,700", e14)
+        assertEquals("45", c8)
+        assertEquals("20", d8)
+        assertEquals("136", c14)
+        assertEquals("87", d14)
+        assertFalse("Quantity C8 must not have ¥", c8.contains("¥"))
+        assertFalse("Reorder point D8 must not have ¥", d8.contains("¥"))
+
+        // 2. Column widths widened so Row 4 KPI labels (C4=平均在庫金額, E4=最大在庫金額) do not clip
+        assertTrue("Col A width >= 190pt", vpAfterAi.colWidths[0] >= 190f)
+        assertTrue("Col C width >= 100pt", vpAfterAi.colWidths[2] >= 100f)
+        assertTrue("Col E width >= 100pt", vpAfterAi.colWidths[4] >= 100f)
+
+        // 3. Create 2-level hierarchy PivotTable from A8: excludes Row 14 ("合計 / 集計"), orders category->item, formats quantities without ¥
+        vm.onSelectCell(7, 0)
+        val pivot = vm.onCreatePivotTable(placeOnNewSheet = false, presetKind = "hierarchy")
+        assertNotNull(pivot)
+        assertEquals("Row 14 ('合計 / 集計') must be excluded from Pivot source", 12, pivot!!.sourceEndRow)
+        assertEquals(6, pivot.sourceRecords.size)
+        assertFalse(pivot.sourceRecords.any { it["商品名"]?.contains("合計") == true })
+        assertEquals(listOf("発注判定", "商品名"), pivot.rowFields)
+        assertEquals(listOf("現在庫数", "発注点", "在庫金額"), pivot.valueFields.map { it.fieldName })
+
+        val vpAfterPivot = vm.uiState.value.viewport
+        val grandTotalRow = pivot.lastRenderedEndRow
+        val startCol = pivot.targetStartCol
+        assertEquals("総計", vpAfterPivot.cellAt(grandTotalRow, startCol)?.displayText)
+        assertEquals("136", vpAfterPivot.cellAt(grandTotalRow, startCol + 2)?.displayText)
+        assertEquals("87", vpAfterPivot.cellAt(grandTotalRow, startCol + 3)?.displayText)
+        assertEquals("¥1,302,700", vpAfterPivot.cellAt(grandTotalRow, startCol + 4)?.displayText)
+        assertTrue("Pivot item column widened for long Japanese product names", vpAfterPivot.colWidths[startCol + 1] >= 180f)
+
+        // 4. Built-in Macro descriptions translate cleanly to English when isEn = true
+        for (macro in MacroStudioEngine.defaultBuiltInMacros()) {
+            val enDesc = com.masusheet.app.core.SpreadsheetI18n.t(macro.description, isEn = true)
+            assertNotEquals("Macro description should translate in EN mode: ${macro.description}", macro.description, enDesc)
+            assertFalse("Translated macro description should contain no Hiragana", enDesc.any { it in '\u3040'..'\u309F' })
+        }
+    }
 }

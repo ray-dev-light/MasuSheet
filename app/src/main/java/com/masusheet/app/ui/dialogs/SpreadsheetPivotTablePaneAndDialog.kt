@@ -340,7 +340,7 @@ fun SpreadsheetPivotTableFieldsRightPane(
                                 fontWeight = if (isChecked) FontWeight.Bold else FontWeight.Medium
                             )
                             Text(
-                                text = if (isNumeric) "∑数値" else "Abc",
+                                text = if (isNumeric) (if (isEn) "∑Num" else "∑数値") else "Abc",
                                 color = if (isNumeric) Color(0xFF38BDF8) else Color(0xFFA78BFA),
                                 fontSize = 9.5.sp
                             )

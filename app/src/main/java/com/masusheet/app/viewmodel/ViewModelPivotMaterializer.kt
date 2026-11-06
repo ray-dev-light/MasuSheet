@@ -120,57 +120,47 @@ internal fun MasuSheetViewModel.resolvePivotStylePalette(stylePreset: String): P
 internal fun MasuSheetViewModel.computePivotAggregation(
     records: List<Map<String, String>>,
     spec: PivotValueFieldSpec,
-    grandTotalBaseRecords: List<Map<String, String>>
+    grandTotalBaseRecords: List<Map<String, String>>,
+    currencyFields: Set<String> = emptySet()
 ): Pair<String, String> {
     val field = spec.fieldName
-    val isRateField = field.contains("割合") || field.contains("率") || field.contains("%")
+    val isRateField = field.contains("割合") || field.contains("率") || field.contains("構成比") || field.contains("%")
+    val isCurrencyField = !isRateField &&
+        !PivotValueFieldSpec.isExplicitNonCurrencyField(field) &&
+        (spec.isCurrencyLike || field in currencyFields)
     val nums = records.mapNotNull { rec ->
-        rec[field]?.replace(",", "")?.replace("¥", "")?.replace("%", "")?.trim()?.toDoubleOrNull()
+        rec[field]?.replace(",", "")?.replace("¥", "")?.replace("￥", "")?.replace("$", "")?.replace("%", "")?.trim()?.toDoubleOrNull()
+    }
+    fun formatAggNumeric(v: Double): Pair<String, String> {
+        return when {
+            isRateField -> String.format(java.util.Locale.US, "%.3f", v) to "percent"
+            isCurrencyField -> kotlin.math.round(v).toLong().toString() to "currency"
+            else -> {
+                val rounded = kotlin.math.round(v)
+                if (kotlin.math.abs(v - rounded) < 1e-6) {
+                    rounded.toLong().toString() to "number"
+                } else {
+                    String.format(java.util.Locale.US, "%.2f", v) to "number"
+                }
+            }
+        }
     }
     return when (spec.agg) {
         PivotAggFunction.COUNT -> {
             val count = records.count { !it[field].isNullOrBlank() }
             count.toString() to "number"
         }
-        PivotAggFunction.SUM -> {
-            val sum = nums.sum()
-            if (isRateField) {
-                String.format(java.util.Locale.US, "%.3f", sum) to "percent"
-            } else {
-                kotlin.math.round(sum).toLong().toString() to "currency"
-            }
-        }
-        PivotAggFunction.AVERAGE -> {
-            val avg = if (nums.isNotEmpty()) nums.average() else 0.0
-            if (isRateField) {
-                String.format(java.util.Locale.US, "%.3f", avg) to "percent"
-            } else {
-                kotlin.math.round(avg).toLong().toString() to "currency"
-            }
-        }
-        PivotAggFunction.MAX -> {
-            val mx = nums.maxOrNull() ?: 0.0
-            if (isRateField) {
-                String.format(java.util.Locale.US, "%.3f", mx) to "percent"
-            } else {
-                kotlin.math.round(mx).toLong().toString() to "currency"
-            }
-        }
-        PivotAggFunction.MIN -> {
-            val mn = nums.minOrNull() ?: 0.0
-            if (isRateField) {
-                String.format(java.util.Locale.US, "%.3f", mn) to "percent"
-            } else {
-                kotlin.math.round(mn).toLong().toString() to "currency"
-            }
-        }
+        PivotAggFunction.SUM -> formatAggNumeric(nums.sum())
+        PivotAggFunction.AVERAGE -> formatAggNumeric(if (nums.isNotEmpty()) nums.average() else 0.0)
+        PivotAggFunction.MAX -> formatAggNumeric(nums.maxOrNull() ?: 0.0)
+        PivotAggFunction.MIN -> formatAggNumeric(nums.minOrNull() ?: 0.0)
         PivotAggFunction.PRODUCT -> {
             val prod = if (nums.isEmpty()) 0.0 else nums.fold(1.0) { acc, d -> acc * d }
             String.format(java.util.Locale.US, "%.2f", prod) to "number"
         }
         PivotAggFunction.PERCENT_OF_TOTAL -> {
             val allNums = grandTotalBaseRecords.mapNotNull { rec ->
-                rec[field]?.replace(",", "")?.replace("¥", "")?.replace("%", "")?.trim()?.toDoubleOrNull()
+                rec[field]?.replace(",", "")?.replace("¥", "")?.replace("￥", "")?.replace("$", "")?.replace("%", "")?.trim()?.toDoubleOrNull()
             }
             val grandSum = allNums.sum()
             val ratio = if (kotlin.math.abs(grandSum) > 1e-9) {
@@ -191,9 +181,11 @@ internal fun MasuSheetViewModel.computePivotAggregation(
 fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
     val cur = _uiState.value
     val pivot = cur.pivotTables.firstOrNull { it.id == pivotId } ?: return
+    val isEn = cur.language == "en"
     val sIdx = pivot.targetSheetIndex
+    val origSheetIndex = cur.viewport.sheetIndex
 
-    val switchedSheet = cur.viewport.sheetIndex != sIdx
+    val switchedSheet = origSheetIndex != sIdx
     if (switchedSheet) {
         val actSnap = engineGateway.executeCommand("sheet.activate", "{\"sheet\":$sIdx}")
         applyViewportSnapshot(actSnap)
@@ -201,18 +193,26 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
 
     val palette = resolvePivotStylePalette(pivot.stylePreset)
 
-    // 1. Clear old rendered bounds on target sheet
-    val clearR0 = minOf(pivot.lastRenderedStartRow, pivot.targetStartRow).coerceAtLeast(0)
-    val clearR1 = maxOf(pivot.lastRenderedEndRow, pivot.targetStartRow + 1)
-    val clearC0 = pivot.targetStartCol.coerceAtLeast(0)
-    val clearC1 = maxOf(pivot.lastRenderedEndCol, pivot.targetStartCol + 3)
-
+    // 1. Clear exact previously rendered bounds on target sheet (if any cells were rendered)
     var lastSnap = _uiState.value.viewport
-    for (r in clearR0..clearR1) {
-        for (c in clearC0..clearC1) {
-            val addr = MasuSheetConfig.formatCellAddress(r, c)
-            lastSnap = engineGateway.executeCommand("cell.set", "{\"cell\":\"$addr\",\"input\":\"\"}")
-            customCellStyles.remove(sIdx to NativeViewportSnapshot.packCellKey(r, c))
+    if (pivot.lastRenderedEndRow >= pivot.lastRenderedStartRow && pivot.lastRenderedEndCol >= pivot.lastRenderedStartCol) {
+        val clearR0 = pivot.lastRenderedStartRow.coerceAtLeast(0)
+        val clearR1 = pivot.lastRenderedEndRow.coerceAtLeast(clearR0)
+        val clearC0 = pivot.lastRenderedStartCol.coerceAtLeast(0)
+        val clearC1 = pivot.lastRenderedEndCol.coerceAtLeast(clearC0)
+        for (r in clearR0..clearR1) {
+            for (c in clearC0..clearC1) {
+                val addr = MasuSheetConfig.formatCellAddress(r, c)
+                lastSnap = engineGateway.executeCommand("cell.set", "{\"cell\":\"$addr\",\"input\":\"\"}")
+                customCellStyles.remove(sIdx to NativeViewportSnapshot.packCellKey(r, c))
+            }
+        }
+    }
+
+    fun restoreOriginSheetIfNeeded() {
+        if (switchedSheet) {
+            val backSnap = engineGateway.executeCommand("sheet.activate", "{\"sheet\":$origSheetIndex}")
+            applyViewportSnapshot(backSnap)
         }
     }
 
@@ -220,11 +220,13 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
     if (pivot.rowFields.isEmpty() && pivot.columnFields.isEmpty() && pivot.valueFields.isEmpty() && pivot.filterFields.isEmpty()) {
         val clearedPivot = pivot.copy(
             lastRenderedStartRow = pivot.targetStartRow,
-            lastRenderedEndRow = pivot.targetStartRow,
-            lastRenderedEndCol = pivot.targetStartCol
+            lastRenderedEndRow = pivot.targetStartRow - 1,
+            lastRenderedStartCol = pivot.targetStartCol,
+            lastRenderedEndCol = pivot.targetStartCol - 1
         )
         sizeRevisionBump++
         applyViewportSnapshot(lastSnap)
+        restoreOriginSheetIfNeeded()
         val latest = _uiState.value
         _uiState.value = latest.copy(
             pivotTables = latest.pivotTables.map { if (it.id == clearedPivot.id) clearedPivot else it }
@@ -232,6 +234,7 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
         return
     }
 
+    val maxPivotColTextPt = mutableMapOf<Int, Float>()
     fun writePivotCell(
         r: Int,
         c: Int,
@@ -256,30 +259,54 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
             borderBottom = packedBorder,
             borderLeft = packedBorder
         )
-    }
-
-    // 2. Filter sourceRecords by active report filters
-    val filteredRecords = pivot.sourceRecords.filter { rec ->
-        pivot.selectedFilterValues.all { (fField, fVal) ->
-            fVal.isBlank() || fVal == "ALL" || rec[fField] == fVal
+        if (text.isNotEmpty()) {
+            var estPt = if (numFmt == "currency") 16f else if (numFmt == "percent" || numFmt == "number") 8f else 0f
+            for (ch in text) {
+                estPt += if (ch.code > 0x7F) 11.2f else 6.4f
+            }
+            val paddedPt = estPt * (if (bold) 1.06f else 1.0f) + 14f
+            val prev = maxPivotColTextPt[c] ?: 0f
+            if (paddedPt > prev) maxPivotColTextPt[c] = paddedPt
         }
     }
 
-    val baseStartCol = pivot.targetStartCol
-    val filterCount = pivot.filterFields.size
-    val renderStartRow = if (filterCount > 0 && pivot.targetStartRow >= filterCount + 1) {
-        pivot.targetStartRow - filterCount - 1
-    } else {
-        pivot.targetStartRow
+    // 2. Filter sourceRecords by active report filters (only for fields currently in filterFields)
+    val activeFilterSet = pivot.filterFields.toSet()
+    val filteredRecords = pivot.sourceRecords.filter { rec ->
+        pivot.selectedFilterValues.all { (fField, fVal) ->
+            fField !in activeFilterSet || fVal.isBlank() || fVal == "ALL" || rec[fField] == fVal
+        }
     }
 
+    val baseStartCol = pivot.targetStartCol.coerceAtLeast(0)
+    val filterCount = pivot.filterFields.size
+    val renderStartRow = if (filterCount > 0) {
+        val desiredTopRow = pivot.targetStartRow - (filterCount + 1)
+        val canPlaceFiltersAbove = desiredTopRow >= 0 &&
+            (desiredTopRow until pivot.targetStartRow).all { r ->
+                (baseStartCol..(baseStartCol + 2)).all { c ->
+                    lastSnap.cellAt(r, c)?.displayText.isNullOrBlank()
+                }
+            }
+        if (canPlaceFiltersAbove) desiredTopRow else pivot.targetStartRow.coerceAtLeast(0)
+    } else {
+        pivot.targetStartRow.coerceAtLeast(0)
+    }
     var cursorRow = renderStartRow
 
-    // 3. Render Report Filter rows at the top if filterFields is non-empty
+    val allFilterLabel = if (isEn) "(All) ▾" else "(すべて) ▾"
+    val valuesHeaderLabel = if (isEn) "Values" else "集計"
+    val grandTotalLabel = if (isEn) "Grand Total" else "総計"
+    val grandSummaryLabel = if (isEn) "Grand Total" else "全体集計"
+    val blankLabel = if (isEn) "(blank)" else "(空白)"
+    val subtotalSuffix = if (isEn) "Total" else "集計"
+
+    // 3. Render Report Filter rows starting at targetStartRow (pushing table header downward, never overwriting above targetStartRow)
+    var maxColWritten = baseStartCol
     if (filterCount > 0) {
         for (fField in pivot.filterFields) {
             val activeVal = pivot.selectedFilterValues[fField]?.takeIf { it.isNotBlank() && it != "ALL" }
-            val displayFilterVal = if (activeVal != null) "$activeVal ▾" else "(すべて) ▾"
+            val displayFilterVal = if (activeVal != null) "$activeVal ▾" else allFilterLabel
             writePivotCell(
                 r = cursorRow,
                 c = baseStartCol,
@@ -298,6 +325,7 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
                 bold = activeVal != null,
                 hAlign = 0
             )
+            maxColWritten = maxOf(maxColWritten, baseStartCol + 1)
             cursorRow++
         }
         cursorRow++ // 1 blank separator row between filters and pivot table header
@@ -311,13 +339,16 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
         listOf(
             PivotValueFieldSpec(
                 fallbackField,
-                if (fallbackField in pivot.numericFields) PivotAggFunction.SUM else PivotAggFunction.COUNT
+                if (fallbackField in pivot.numericFields) PivotAggFunction.SUM else PivotAggFunction.COUNT,
+                PivotValueFieldSpec.resolveCurrencyLike(fallbackField, pivot.currencyFields)
             )
         )
     }
 
     val isTabularOrOutline = (pivot.reportLayout == "tabular" || pivot.reportLayout == "outline") && rFields.size >= 2
-    val labelColCount = if (isTabularOrOutline) rFields.size.coerceAtMost(2) else 1
+    val labelColCount = if (isTabularOrOutline) rFields.size else 1
+    val showRowGrandTotals = pivot.grandTotalsMode in setOf("both", "rows")
+    val showColGrandTotals = pivot.grandTotalsMode in setOf("both", "columns", "cols")
 
     // Distinct column values when columnFields is non-empty
     val colFieldPrimary = cFields.firstOrNull()
@@ -344,11 +375,7 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
             )
         }
     } else {
-        val rowHeaderTitle = when {
-            rFields.size == 1 -> rFields[0]
-            rFields.size >= 2 -> "${rFields[0]} / ${rFields[1]}"
-            else -> "集計"
-        }
+        val rowHeaderTitle = if (rFields.isEmpty()) valuesHeaderLabel else rFields.joinToString(" / ")
         writePivotCell(
             r = headerRow,
             c = baseStartCol,
@@ -360,7 +387,7 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
         )
     }
 
-    var maxColWritten = baseStartCol + labelColCount - 1
+    maxColWritten = maxOf(maxColWritten, baseStartCol + labelColCount - 1)
     if (distinctColValues.isNotEmpty()) {
         val primarySpec = vFields.first()
         distinctColValues.forEachIndexed { idx, colVal ->
@@ -376,12 +403,12 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
             )
             maxColWritten = maxOf(maxColWritten, c)
         }
-        if (pivot.grandTotalsMode != "none") {
+        if (showRowGrandTotals) {
             val gtCol = baseStartCol + labelColCount + distinctColValues.size
             writePivotCell(
                 r = headerRow,
                 c = gtCol,
-                text = "総計 (${primarySpec.displayTitle(_uiState.value.language == "en")})",
+                text = "$grandTotalLabel (${primarySpec.displayTitle(isEn)})",
                 bg = palette.headerBg,
                 fg = palette.headerFg,
                 bold = true,
@@ -395,7 +422,7 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
             val headerText = if (spec.agg == PivotAggFunction.SUM && vFields.count { it.fieldName == spec.fieldName } == 1) {
                 spec.fieldName
             } else {
-                spec.displayTitle(_uiState.value.language == "en")
+                spec.displayTitle(isEn)
             }
             writePivotCell(
                 r = headerRow,
@@ -423,7 +450,7 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
             val primarySpec = vFields.first()
             distinctColValues.forEachIndexed { cIdx, colVal ->
                 val cellRecs = groupRecords.filter { it[colFieldPrimary] == colVal }
-                val (valStr, fmt) = computePivotAggregation(cellRecs, primarySpec, filteredRecords)
+                val (valStr, fmt) = computePivotAggregation(cellRecs, primarySpec, filteredRecords, pivot.currencyFields)
                 val cellBg = if (!isBold && pivot.bandedCols && cIdx % 2 == 1) palette.bandColAccentBg else rowBg
                 writePivotCell(
                     r = rowIdx,
@@ -436,8 +463,8 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
                     numFmt = fmt
                 )
             }
-            if (pivot.grandTotalsMode != "none") {
-                val (gtStr, gtFmt) = computePivotAggregation(groupRecords, primarySpec, filteredRecords)
+            if (showRowGrandTotals) {
+                val (gtStr, gtFmt) = computePivotAggregation(groupRecords, primarySpec, filteredRecords, pivot.currencyFields)
                 writePivotCell(
                     r = rowIdx,
                     c = baseStartCol + labelColCount + distinctColValues.size,
@@ -451,7 +478,7 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
             }
         } else {
             vFields.forEachIndexed { vIdx, spec ->
-                val (valStr, fmt) = computePivotAggregation(groupRecords, spec, filteredRecords)
+                val (valStr, fmt) = computePivotAggregation(groupRecords, spec, filteredRecords, pivot.currencyFields)
                 val cellBg = if (!isBold && pivot.bandedCols && vIdx % 2 == 1) palette.bandColAccentBg else rowBg
                 val numVal = valStr.toDoubleOrNull()
                 val finalFg = if (numVal != null && numVal < 0.0) 0xFFDC2626.toInt() else rowFg
@@ -469,16 +496,16 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
         }
     }
 
-    // 5. Render Data Rows (0, 1, or 2+ rowFields)
+    // 5. Render Data Rows (0, 1, or N >= 2 rowFields recursively)
     var visualRowCounter = 0
     if (rFields.isEmpty()) {
         val rowBg = if (pivot.bandedRows) palette.bandEvenBg else palette.bandOddBg
-        writePivotCell(cursorRow, baseStartCol, "全体集計", bg = rowBg, bold = true)
+        writePivotCell(cursorRow, baseStartCol, grandSummaryLabel, bg = rowBg, bold = true)
         writeValueCellsForRow(cursorRow, filteredRecords, rowBg = rowBg, isBold = true)
         cursorRow++
     } else if (rFields.size == 1) {
         val rf0 = rFields[0]
-        val grouped = filteredRecords.groupBy { it[rf0].orEmpty().ifEmpty { "(空白)" } }
+        val grouped = filteredRecords.groupBy { it[rf0].orEmpty().ifEmpty { blankLabel } }
         for ((groupKey, groupRecs) in grouped) {
             val rowBg = if (pivot.bandedRows && visualRowCounter % 2 == 0) palette.bandEvenBg else palette.bandOddBg
             writePivotCell(cursorRow, baseStartCol, groupKey, bg = rowBg, bold = false)
@@ -487,105 +514,160 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
             visualRowCounter++
         }
     } else {
-        val rf0 = rFields[0]
-        val rf1 = rFields[1]
-        val outerGroups = filteredRecords.groupBy { it[rf0].orEmpty().ifEmpty { "(空白)" } }
-        for ((outerKey, outerRecs) in outerGroups) {
-            val isCollapsed = outerKey in pivot.collapsedRowGroups
-            val prefixIcon = if (isCollapsed) "▸ " else "▾ "
-            val innerGroups = outerRecs.groupBy { it[rf1].orEmpty().ifEmpty { "(空白)" } }
+        val pendingFirstLabels = arrayOfNulls<String>(rFields.size)
+        fun isGroupCollapsed(level: Int, grpKey: String, path: List<String>): Boolean {
+            if (grpKey in pivot.collapsedRowGroups) return true
+            if (path.joinToString("/") in pivot.collapsedRowGroups) return true
+            if (level == 0 && (grpKey == "(空白)" || grpKey == "(blank)")) {
+                return "(空白)" in pivot.collapsedRowGroups || "(blank)" in pivot.collapsedRowGroups
+            }
+            return false
+        }
 
-            if (!isTabularOrOutline) {
-                // Compact Layout: Group Header Row + Indented Child Rows
-                val grpBg = if (pivot.subtotalsMode != "none" || isCollapsed) palette.subtotalBg else palette.bandEvenBg
-                writePivotCell(cursorRow, baseStartCol, "$prefixIcon$outerKey", bg = grpBg, bold = true)
-                if (pivot.subtotalsMode == "top" || isCollapsed) {
-                    writeValueCellsForRow(cursorRow, outerRecs, rowBg = grpBg, isBold = true)
-                } else {
-                    for (c in (baseStartCol + 1)..maxColWritten) {
-                        writePivotCell(cursorRow, c, "", bg = grpBg, bold = true)
-                    }
-                }
-                cursorRow++
-
-                if (!isCollapsed) {
-                    for ((innerKey, innerRecs) in innerGroups) {
-                        val childBg = if (pivot.bandedRows && visualRowCounter % 2 == 0) palette.bandEvenBg else palette.bandOddBg
-                        writePivotCell(cursorRow, baseStartCol, "   $innerKey", bg = childBg, bold = false)
-                        writeValueCellsForRow(cursorRow, innerRecs, rowBg = childBg, isBold = false)
-                        cursorRow++
-                        visualRowCounter++
-                    }
-                    if (pivot.subtotalsMode == "bottom") {
-                        writePivotCell(cursorRow, baseStartCol, "$outerKey 集計", bg = palette.subtotalBg, bold = true)
-                        writeValueCellsForRow(cursorRow, outerRecs, rowBg = palette.subtotalBg, isBold = true)
-                        cursorRow++
-                    }
-                }
-            } else {
-                // Tabular or Outline Layout (2 label columns: rf0 | rf1)
-                if (isCollapsed) {
-                    writePivotCell(cursorRow, baseStartCol, "$prefixIcon$outerKey", bg = palette.subtotalBg, bold = true)
-                    writePivotCell(cursorRow, baseStartCol + 1, "(${innerGroups.size} 件折りたたみ)", bg = palette.subtotalBg, bold = false)
-                    writeValueCellsForRow(cursorRow, outerRecs, rowBg = palette.subtotalBg, isBold = true)
-                    cursorRow++
-                } else {
-                    if (pivot.reportLayout == "outline" && pivot.subtotalsMode == "top") {
-                        writePivotCell(cursorRow, baseStartCol, "$prefixIcon$outerKey", bg = palette.subtotalBg, bold = true)
-                        writePivotCell(cursorRow, baseStartCol + 1, "", bg = palette.subtotalBg, bold = true)
-                        writeValueCellsForRow(cursorRow, outerRecs, rowBg = palette.subtotalBg, isBold = true)
-                        cursorRow++
-                    }
-                    var isFirstInner = true
-                    for ((innerKey, innerRecs) in innerGroups) {
-                        val childBg = if (pivot.bandedRows && visualRowCounter % 2 == 0) palette.bandEvenBg else palette.bandOddBg
-                        val outerLabel = if (isFirstInner) {
-                            "$prefixIcon$outerKey"
-                        } else if (pivot.repeatLabels) {
-                            outerKey
-                        } else {
-                            ""
+        fun renderLevel(level: Int, levelRecords: List<Map<String, String>>, parentPath: List<String>) {
+            val rf = rFields[level]
+            val grouped = levelRecords.groupBy { it[rf].orEmpty().ifEmpty { blankLabel } }
+            if (level == rFields.lastIndex) {
+                for ((leafKey, leafRecs) in grouped) {
+                    val childBg = if (pivot.bandedRows && visualRowCounter % 2 == 0) palette.bandEvenBg else palette.bandOddBg
+                    if (!isTabularOrOutline) {
+                        writePivotCell(cursorRow, baseStartCol, "${"   ".repeat(level)}$leafKey", bg = childBg, bold = false)
+                    } else {
+                        for (d in 0 until level) {
+                            val pending = pendingFirstLabels[d]
+                            val colLbl = when {
+                                pending != null -> {
+                                    pendingFirstLabels[d] = null
+                                    pending
+                                }
+                                pivot.repeatLabels -> parentPath[d]
+                                else -> ""
+                            }
+                            writePivotCell(cursorRow, baseStartCol + d, colLbl, bg = childBg, bold = pending != null)
                         }
-                        writePivotCell(cursorRow, baseStartCol, outerLabel, bg = childBg, bold = isFirstInner)
-                        writePivotCell(cursorRow, baseStartCol + 1, innerKey, bg = childBg, bold = false)
-                        writeValueCellsForRow(cursorRow, innerRecs, rowBg = childBg, isBold = false)
-                        cursorRow++
-                        visualRowCounter++
-                        isFirstInner = false
+                        writePivotCell(cursorRow, baseStartCol + level, leafKey, bg = childBg, bold = false)
                     }
-                    if (pivot.subtotalsMode == "bottom") {
-                        writePivotCell(cursorRow, baseStartCol, "$outerKey 集計", bg = palette.subtotalBg, bold = true)
-                        writePivotCell(cursorRow, baseStartCol + 1, "", bg = palette.subtotalBg, bold = true)
-                        writeValueCellsForRow(cursorRow, outerRecs, rowBg = palette.subtotalBg, isBold = true)
-                        cursorRow++
-                    }
+                    writeValueCellsForRow(cursorRow, leafRecs, rowBg = childBg, isBold = false)
+                    cursorRow++
+                    visualRowCounter++
                 }
+                return
             }
 
-            if (pivot.blankRows) {
-                for (c in baseStartCol..maxColWritten) {
-                    writePivotCell(cursorRow, c, "", bg = 0xFFFFFFFF.toInt(), bold = false)
+            for ((grpKey, grpRecs) in grouped) {
+                val nextPath = parentPath + grpKey
+                val isCollapsed = isGroupCollapsed(level, grpKey, nextPath)
+                val prefixIcon = if (isCollapsed) "▸ " else "▾ "
+                val childDistinctCount = grpRecs.map { it[rFields[level + 1]].orEmpty().ifEmpty { blankLabel } }.distinct().size
+                val collapsedSummary = if (isEn) "($childDistinctCount items collapsed)" else "(${childDistinctCount} 件折りたたみ)"
+
+                if (!isTabularOrOutline) {
+                    val grpBg = if (pivot.subtotalsMode != "none" || isCollapsed) palette.subtotalBg else palette.bandEvenBg
+                    val indent = "   ".repeat(level)
+                    writePivotCell(cursorRow, baseStartCol, "$indent$prefixIcon$grpKey", bg = grpBg, bold = true)
+                    if (pivot.subtotalsMode == "top" || isCollapsed) {
+                        writeValueCellsForRow(cursorRow, grpRecs, rowBg = grpBg, isBold = true)
+                    } else {
+                        for (c in (baseStartCol + 1)..maxColWritten) {
+                            writePivotCell(cursorRow, c, "", bg = grpBg, bold = true)
+                        }
+                    }
+                    cursorRow++
+                    if (!isCollapsed) {
+                        renderLevel(level + 1, grpRecs, nextPath)
+                        if (pivot.subtotalsMode == "bottom") {
+                            writePivotCell(cursorRow, baseStartCol, "$indent$grpKey $subtotalSuffix", bg = palette.subtotalBg, bold = true)
+                            writeValueCellsForRow(cursorRow, grpRecs, rowBg = palette.subtotalBg, isBold = true)
+                            cursorRow++
+                        }
+                    }
+                } else {
+                    if (isCollapsed) {
+                        for (d in 0 until level) {
+                            val pending = pendingFirstLabels[d]
+                            val colLbl = when {
+                                pending != null -> {
+                                    pendingFirstLabels[d] = null
+                                    pending
+                                }
+                                pivot.repeatLabels -> parentPath[d]
+                                else -> ""
+                            }
+                            writePivotCell(cursorRow, baseStartCol + d, colLbl, bg = palette.subtotalBg, bold = pending != null)
+                        }
+                        writePivotCell(cursorRow, baseStartCol + level, "$prefixIcon$grpKey", bg = palette.subtotalBg, bold = true)
+                        writePivotCell(cursorRow, baseStartCol + level + 1, collapsedSummary, bg = palette.subtotalBg, bold = false)
+                        for (d in (level + 2) until labelColCount) {
+                            writePivotCell(cursorRow, baseStartCol + d, "", bg = palette.subtotalBg, bold = false)
+                        }
+                        writeValueCellsForRow(cursorRow, grpRecs, rowBg = palette.subtotalBg, isBold = true)
+                        cursorRow++
+                    } else {
+                        if (pivot.reportLayout == "outline" && pivot.subtotalsMode == "top") {
+                            for (d in 0 until level) {
+                                val pending = pendingFirstLabels[d]
+                                val colLbl = when {
+                                    pending != null -> {
+                                        pendingFirstLabels[d] = null
+                                        pending
+                                    }
+                                    pivot.repeatLabels -> parentPath[d]
+                                    else -> ""
+                                }
+                                writePivotCell(cursorRow, baseStartCol + d, colLbl, bg = palette.subtotalBg, bold = true)
+                            }
+                            writePivotCell(cursorRow, baseStartCol + level, "$prefixIcon$grpKey", bg = palette.subtotalBg, bold = true)
+                            for (d in (level + 1) until labelColCount) {
+                                writePivotCell(cursorRow, baseStartCol + d, "", bg = palette.subtotalBg, bold = true)
+                            }
+                            writeValueCellsForRow(cursorRow, grpRecs, rowBg = palette.subtotalBg, isBold = true)
+                            cursorRow++
+                        } else {
+                            pendingFirstLabels[level] = "$prefixIcon$grpKey"
+                        }
+                        renderLevel(level + 1, grpRecs, nextPath)
+                        pendingFirstLabels[level] = null
+                        if (pivot.subtotalsMode == "bottom") {
+                            for (d in 0 until level) {
+                                writePivotCell(cursorRow, baseStartCol + d, if (pivot.repeatLabels) parentPath[d] else "", bg = palette.subtotalBg, bold = false)
+                            }
+                            writePivotCell(cursorRow, baseStartCol + level, "$grpKey $subtotalSuffix", bg = palette.subtotalBg, bold = true)
+                            for (d in (level + 1) until labelColCount) {
+                                writePivotCell(cursorRow, baseStartCol + d, "", bg = palette.subtotalBg, bold = true)
+                            }
+                            writeValueCellsForRow(cursorRow, grpRecs, rowBg = palette.subtotalBg, isBold = true)
+                            cursorRow++
+                        }
+                    }
                 }
-                cursorRow++
+
+                if (level == 0 && pivot.blankRows) {
+                    for (c in baseStartCol..maxColWritten) {
+                        writePivotCell(cursorRow, c, "", bg = 0xFFFFFFFF.toInt(), bold = false)
+                    }
+                    cursorRow++
+                }
             }
         }
+
+        renderLevel(0, filteredRecords, emptyList())
     }
 
     // 6. Render Grand Total Row at bottom
-    if (pivot.grandTotalsMode != "none" && rFields.isNotEmpty()) {
+    if (showColGrandTotals && rFields.isNotEmpty()) {
         writePivotCell(
             r = cursorRow,
             c = baseStartCol,
-            text = "総計",
+            text = grandTotalLabel,
             bg = palette.grandTotalBg,
             fg = palette.grandTotalFg,
             bold = true,
             hAlign = 0
         )
-        if (labelColCount > 1) {
+        for (i in 1 until labelColCount) {
             writePivotCell(
                 r = cursorRow,
-                c = baseStartCol + 1,
+                c = baseStartCol + i,
                 text = "",
                 bg = palette.grandTotalBg,
                 fg = palette.grandTotalFg,
@@ -605,8 +687,14 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
 
     // Ensure readable column widths for the rendered PivotTable
     for (c in baseStartCol..maxColWritten) {
-        val curW = customColWidths[sIdx to c] ?: 84f
-        val minNeeded = if (c < baseStartCol + labelColCount) 96f else 88f
+        val isLabelCol = c < baseStartCol + labelColCount
+        val measured = maxPivotColTextPt[c] ?: 0f
+        val minNeeded = if (isLabelCol) {
+            measured.coerceIn(96f, 210f)
+        } else {
+            measured.coerceIn(88f, 136f)
+        }
+        val curW = customColWidths[sIdx to c] ?: 64f
         if (curW < minNeeded) {
             customColWidths[sIdx to c] = minNeeded
         }
@@ -616,10 +704,12 @@ fun MasuSheetViewModel.materializePivotTable(pivotId: String) {
     val updatedPivot = pivot.copy(
         lastRenderedStartRow = renderStartRow,
         lastRenderedEndRow = finalEndRow,
+        lastRenderedStartCol = baseStartCol,
         lastRenderedEndCol = maxColWritten
     )
     sizeRevisionBump++
     applyViewportSnapshot(lastSnap)
+    restoreOriginSheetIfNeeded()
     val latest = _uiState.value
     _uiState.value = latest.copy(
         pivotTables = latest.pivotTables.map { if (it.id == updatedPivot.id) updatedPivot else it }

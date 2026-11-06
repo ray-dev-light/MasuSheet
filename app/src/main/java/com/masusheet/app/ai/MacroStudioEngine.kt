@@ -146,6 +146,8 @@ object MacroStudioEngine {
         }
         for (step in steps) {
             val p = runCatching { JSONObject(step.paramsJson) }.getOrNull() ?: JSONObject()
+            val explicitRange = p.optString("range", "").trim()
+            val targetExpr = if (explicitRange.isNotEmpty()) "Range(\"$explicitRange\")" else "Selection"
             val vbaLine = when (step.command) {
                 "cell.set" -> {
                     val cell = p.optString("cell", "ActiveCell")
@@ -158,39 +160,66 @@ object MacroStudioEngine {
                     val rng = p.optString("range", p.optString("active", "A1"))
                     "Range(\"$rng\").Select"
                 }
-                "format.bold" -> "Selection.Font.Bold = True"
-                "format.italic" -> "Selection.Font.Italic = True"
-                "format.underline" -> "Selection.Font.Underline = xlUnderlineStyleSingle"
-                "format.fillColor" -> {
+                "format.bold", "home.bold" -> {
+                    val on = if (p.has("bold")) p.optBoolean("bold", true) else if (p.has("on")) p.optBoolean("on", true) else true
+                    "$targetExpr.Font.Bold = ${if (on) "True" else "False"}"
+                }
+                "format.italic", "home.italic" -> {
+                    val on = if (p.has("italic")) p.optBoolean("italic", true) else if (p.has("on")) p.optBoolean("on", true) else true
+                    "$targetExpr.Font.Italic = ${if (on) "True" else "False"}"
+                }
+                "format.underline", "home.underline" -> {
+                    val on = if (p.has("underline")) p.optBoolean("underline", true) else if (p.has("on")) p.optBoolean("on", true) else true
+                    "$targetExpr.Font.Underline = ${if (on) "xlUnderlineStyleSingle" else "xlUnderlineStyleNone"}"
+                }
+                "format.strikethrough", "home.strikethrough" -> {
+                    val on = if (p.has("strikethrough")) p.optBoolean("strikethrough", true) else if (p.has("on")) p.optBoolean("on", true) else true
+                    "$targetExpr.Font.Strikethrough = ${if (on) "True" else "False"}"
+                }
+                "format.fillColor", "home.fillColor" -> {
                     val col = p.optString("color", "#FFFF00")
                     val argb = SpreadsheetColorPalette.parseHexOrNull(col) ?: 0xFFFFFF00.toInt()
                     val r = (argb ushr 16) and 0xFF
                     val g = (argb ushr 8) and 0xFF
                     val b = argb and 0xFF
-                    "Selection.Interior.Color = RGB($r, $g, $b)"
+                    "$targetExpr.Interior.Color = RGB($r, $g, $b)"
                 }
-                "format.fontColor" -> {
+                "format.fontColor", "home.fontColor" -> {
                     val col = p.optString("color", "#000000")
                     val argb = SpreadsheetColorPalette.parseHexOrNull(col) ?: 0xFF000000.toInt()
                     val r = (argb ushr 16) and 0xFF
                     val g = (argb ushr 8) and 0xFF
                     val b = argb and 0xFF
-                    "Selection.Font.Color = RGB($r, $g, $b)"
+                    "$targetExpr.Font.Color = RGB($r, $g, $b)"
                 }
-                "format.borders" -> "Selection.Borders.LineStyle = xlContinuous"
-                "format.mergeAndCenter" -> "Selection.Merge"
-                "format.unmergeCells" -> "Selection.UnMerge"
-                "format.numberFormat" -> {
-                    val fmt = p.optString("format", "#,##0")
-                    "Selection.NumberFormatLocal = \"$fmt\""
+                "format.borders", "home.borders" -> "$targetExpr.Borders.LineStyle = xlContinuous"
+                "format.mergeAndCenter", "format.mergeCells", "home.mergeCenter", "home.mergeCells" -> "$targetExpr.Merge"
+                "format.unmergeCells", "home.unmergeCells" -> "$targetExpr.UnMerge"
+                "format.numberFormat", "home.numberFormat" -> {
+                    val fmt = p.optString("format", p.optString("code", "#,##0")).replace("\"", "\"\"")
+                    "$targetExpr.NumberFormatLocal = \"$fmt\""
                 }
-                "data.sortAsc" -> "Selection.Sort Order1:=xlAscending"
-                "data.sortDesc" -> "Selection.Sort Order1:=xlDescending"
-                "home.insertRows" -> "Selection.EntireRow.Insert"
-                "home.deleteRows" -> "Selection.EntireRow.Delete"
-                "home.insertColumns" -> "Selection.EntireColumn.Insert"
-                "home.deleteColumns" -> "Selection.EntireColumn.Delete"
+                "format.alignCenter", "home.alignCenter" -> "$targetExpr.HorizontalAlignment = xlCenter"
+                "format.alignRight", "home.alignRight" -> "$targetExpr.HorizontalAlignment = xlRight"
+                "format.alignLeft", "home.alignLeft" -> "$targetExpr.HorizontalAlignment = xlLeft"
+                "home.autoFitColumnWidth", "home.autofitColumnWidth" -> {
+                    val cols = p.optString("cols", explicitRange).trim()
+                    if (cols.isNotEmpty()) "Columns(\"$cols\").AutoFit" else "Columns(\"A:Z\").AutoFit"
+                }
+                "edit.clearContents", "home.clearContents" -> "$targetExpr.ClearContents"
+                "edit.clearAll", "home.clearAll" -> "$targetExpr.Clear"
+                "edit.clearFormats", "home.clearFormats" -> "$targetExpr.ClearFormats"
+                "data.sortAsc", "data.sortAscending" -> "$targetExpr.Sort Order1:=xlAscending"
+                "data.sortDesc", "data.sortDescending" -> "$targetExpr.Sort Order1:=xlDescending"
+                "home.insertRows" -> "$targetExpr.EntireRow.Insert"
+                "home.deleteRows" -> "$targetExpr.EntireRow.Delete"
+                "home.insertColumns" -> "$targetExpr.EntireColumn.Insert"
+                "home.deleteColumns" -> "$targetExpr.EntireColumn.Delete"
                 "home.insertSheet" -> "Worksheets.Add"
+                "sheet.rename", "home.renameSheet" -> {
+                    val nm = p.optString("name", "Sheet1").replace("\"", "\"\"")
+                    "ActiveSheet.Name = \"$nm\""
+                }
                 else -> "Application.Run \"${step.command}\""
             }
             sb.appendLine("    $vbaLine")
@@ -365,13 +394,19 @@ object MacroStudioEngine {
         val sheetNameMatch = Regex("""^ActiveSheet\.Name\s*=\s*"([^"]+)"$""", RegexOption.IGNORE_CASE).find(clean)
         if (sheetNameMatch != null) {
             val newName = sheetNameMatch.groupValues[1]
-            executeCmd("home.renameSheet", "{\"name\":${JSONObject.quote(newName)}}")
+            executeCmd("sheet.rename", "{\"sheet\":${vp.sheetIndex},\"name\":${JSONObject.quote(newName)}}")
             return "シート名を「$newName」に変更"
         }
 
         // 4. Columns("A:D").AutoFit / Rows("1:10").AutoFit
         if (clean.endsWith(".AutoFit", ignoreCase = true)) {
-            executeCmd("home.autoFitColumnWidth", "{}")
+            if (clean.startsWith("Rows", ignoreCase = true)) {
+                val rowRng = Regex("""Rows\(\s*"([^"]+)"\s*\)""", RegexOption.IGNORE_CASE).find(clean)?.groupValues?.get(1)
+                executeCmd("home.autoFitRowHeight", if (rowRng != null) "{\"rows\":${JSONObject.quote(rowRng)}}" else "{}")
+                return "行の高さの自動調整 (AutoFit)"
+            }
+            val colRng = Regex("""Columns\(\s*"([^"]+)"\s*\)""", RegexOption.IGNORE_CASE).find(clean)?.groupValues?.get(1)
+            executeCmd("home.autoFitColumnWidth", if (colRng != null) "{\"cols\":${JSONObject.quote(colRng)}}" else "{}")
             return "列幅の自動調整 (AutoFit)"
         }
 
@@ -439,13 +474,42 @@ object MacroStudioEngine {
                     executeCmd("edit.clearAll", "{\"range\":\"$targetRange\"}")
                     "Range(\"$targetRange\") をすべてクリア"
                 }
+                propChain == "clearformats" -> {
+                    executeCmd("edit.clearFormats", "{\"range\":\"$targetRange\"}")
+                    "Range(\"$targetRange\") の書式をクリア"
+                }
                 propChain == "merge" -> {
-                    executeCmd("format.mergeCells", "{\"range\":\"$targetRange\"}")
+                    executeCmd("home.mergeCells", "{\"range\":\"$targetRange\"}")
                     "Range(\"$targetRange\") を結合"
                 }
                 propChain == "unmerge" -> {
-                    executeCmd("format.unmergeCells", "{\"range\":\"$targetRange\"}")
+                    executeCmd("home.unmergeCells", "{\"range\":\"$targetRange\"}")
                     "Range(\"$targetRange\") の結合を解除"
+                }
+                propChain == "entirerow.insert" -> {
+                    executeCmd("home.insertRows", "{}")
+                    "Range(\"$targetRange\") に行を挿入"
+                }
+                propChain == "entirerow.delete" -> {
+                    executeCmd("home.deleteRows", "{}")
+                    "Range(\"$targetRange\") の行を削除"
+                }
+                propChain == "entirecolumn.insert" -> {
+                    executeCmd("home.insertColumns", "{}")
+                    "Range(\"$targetRange\") に列を挿入"
+                }
+                propChain == "entirecolumn.delete" -> {
+                    executeCmd("home.deleteColumns", "{}")
+                    "Range(\"$targetRange\") の列を削除"
+                }
+                propChain == "horizontalalignment" -> {
+                    val alignCmd = when {
+                        rhs.contains("xlCenter", ignoreCase = true) -> "format.alignCenter"
+                        rhs.contains("xlRight", ignoreCase = true) -> "format.alignRight"
+                        else -> "format.alignLeft"
+                    }
+                    executeCmd(alignCmd, "{\"range\":\"$targetRange\"}")
+                    "Range(\"$targetRange\").HorizontalAlignment = $rhs"
                 }
                 propChain == "font.bold" -> {
                     val on = !rhs.equals("False", ignoreCase = true)
@@ -457,9 +521,15 @@ object MacroStudioEngine {
                     executeCmd("format.italic", "{\"range\":\"$targetRange\",\"italic\":$on}")
                     "Range(\"$targetRange\").Font.Italic = $on"
                 }
+                propChain == "font.strikethrough" -> {
+                    val on = !rhs.equals("False", ignoreCase = true)
+                    executeCmd("format.strikethrough", "{\"range\":\"$targetRange\",\"strikethrough\":$on}")
+                    "Range(\"$targetRange\").Font.Strikethrough = $on"
+                }
                 propChain.startsWith("font.underline") -> {
-                    executeCmd("format.underline", "{\"range\":\"$targetRange\",\"underline\":true}")
-                    "Range(\"$targetRange\") に下線を設定"
+                    val on = !(rhs.equals("False", ignoreCase = true) || rhs.contains("None", ignoreCase = true))
+                    executeCmd("format.underline", "{\"range\":\"$targetRange\",\"underline\":$on}")
+                    "Range(\"$targetRange\") の下線を ${if (on) "ON" else "OFF"} に設定"
                 }
                 propChain == "interior.color" || propChain == "font.color" -> {
                     val rgbMatch = Regex("""RGB\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)""", RegexOption.IGNORE_CASE).find(rhs)
@@ -486,7 +556,7 @@ object MacroStudioEngine {
                 }
                 propChain.startsWith("sort") -> {
                     val desc = clean.contains("xlDescending", ignoreCase = true)
-                    executeCmd(if (desc) "data.sortDesc" else "data.sortAsc", "{\"range\":\"$targetRange\"}")
+                    executeCmd(if (desc) "data.sortDescending" else "data.sortAscending", "{\"range\":\"$targetRange\"}")
                     "Range(\"$targetRange\") を並べ替え"
                 }
                 else -> "実行: $clean"
@@ -513,18 +583,88 @@ object MacroStudioEngine {
      */
     fun generateVbaFromNaturalLanguage(prompt: String, vp: NativeViewportSnapshot): String {
         val p = prompt.trim()
-        val r0 = min(vp.selStartRow, vp.selEndRow) + 1
-        val c0 = min(vp.selStartCol, vp.selEndCol) + 1
-        val r1 = max(vp.selStartRow, vp.selEndRow) + 1
-        val c1 = max(vp.selStartCol, vp.selEndCol) + 1
-        val selRange = if (r0 == r1 && c0 == c1) "A1:D5" else "${MasuSheetConfig.formatCellAddress(r0 - 1, c0 - 1)}:${MasuSheetConfig.formatCellAddress(r1 - 1, c1 - 1)}"
+        val pLower = p.lowercase()
+        val explicitRangeMatch = Regex("""\b([A-Z]{1,2}\d+):([A-Z]{1,2}\d+)\b""", RegexOption.IGNORE_CASE).find(p)
+        val explicitBounds = explicitRangeMatch?.let { m ->
+            val p0 = MasuSheetConfig.parseCellAddressStrict(m.groupValues[1])
+            val p1 = MasuSheetConfig.parseCellAddressStrict(m.groupValues[2])
+            if (p0 != null && p1 != null) {
+                intArrayOf(
+                    min(p0.first, p1.first) + 1,
+                    min(p0.second, p1.second) + 1,
+                    max(p0.first, p1.first) + 1,
+                    max(p0.second, p1.second) + 1
+                )
+            } else null
+        }
+
+        val selR0 = min(vp.selStartRow, vp.selEndRow) + 1
+        val selC0 = min(vp.selStartCol, vp.selEndCol) + 1
+        val selR1 = max(vp.selStartRow, vp.selEndRow) + 1
+        val selC1 = max(vp.selStartCol, vp.selEndCol) + 1
+        val isSingleCell = selR0 == selR1 && selC0 == selC1
+        val nonEmpty = vp.cells.values.filter { it.displayText.isNotBlank() }
+        val tblR0 = explicitBounds?.get(0) ?: if (isSingleCell) ((nonEmpty.minOfOrNull { it.row } ?: 0) + 1) else selR0
+        val tblR1 = explicitBounds?.let { max(it[2], if (it[0] == it[2]) ((nonEmpty.maxOfOrNull { c -> c.row } ?: 4) + 1).coerceAtLeast(it[0] + 1) else it[2]) }
+            ?: if (isSingleCell) ((nonEmpty.maxOfOrNull { it.row } ?: 4) + 1).coerceAtLeast(tblR0 + 1) else selR1
+        val tblC0 = explicitBounds?.get(1) ?: if (isSingleCell) ((nonEmpty.minOfOrNull { it.col } ?: 0) + 1) else selC0
+        val tblC1 = explicitBounds?.get(3) ?: if (isSingleCell) ((nonEmpty.maxOfOrNull { it.col } ?: 3) + 1).coerceAtLeast(tblC0 + 1) else selC1
+
+        val selRange = "${MasuSheetConfig.formatCellAddress(tblR0 - 1, tblC0 - 1)}:${MasuSheetConfig.formatCellAddress(tblR1 - 1, tblC1 - 1)}"
+        val dataR0 = if (isSingleCell) (tblR0 + 1).coerceAtMost(tblR1) else tblR0
+        val dataR1 = tblR1
+        val dataC0 = if (isSingleCell) (tblC0 + 1).coerceAtMost(tblC1) else tblC0
+        val dataC1 = tblC1
+
+        val wantsTax = p.contains("税込") || p.contains("消費税") || p.contains("1.1") || Regex("""\btax\b|\bvat\b""").containsMatchIn(pLower)
+        val wantsSum = p.contains("合計") || p.contains("集計") || Regex("""\bsum\b|\btotal""").containsMatchIn(pLower)
+
+        val hdrRow = if (isSingleCell) tblR0 else max(1, tblR0 - 1)
+        val sumColIdx1Based = tblC1 + 1
+        val sumColLet = MasuSheetConfig.formatColumnLabel(sumColIdx1Based - 1)
+        val firstColLet = MasuSheetConfig.formatColumnLabel(tblC0 - 1)
+        val firstColSample = vp.cellAt(dataR0 - 1, tblC0 - 1)?.displayText
+            ?.replace(",", "")?.replace("¥", "")?.replace("￥", "")?.replace("$", "")?.replace("%", "")?.trim()
+        val firstColIsNumeric = !isSingleCell && firstColSample != null && firstColSample.toDoubleOrNull() != null
+        val firstValCol1Based = if (firstColIsNumeric || tblC1 <= tblC0) tblC0 else (tblC0 + 1)
+        val startValColLet = MasuSheetConfig.formatColumnLabel((firstValCol1Based - 1).coerceAtLeast(0))
+        val endValColLet = MasuSheetConfig.formatColumnLabel(tblC1 - 1)
+        val totalLabelColLet = if (firstColIsNumeric && tblC0 > 1) MasuSheetConfig.formatColumnLabel(tblC0 - 2) else firstColLet
+        val totalRow1Based = dataR1 + 1
 
         return when {
-            p.contains("税込") || p.contains("消費税") || p.contains("1.1") -> """
+            wantsTax && wantsSum -> {
+                val colSumLines = (firstValCol1Based..sumColIdx1Based).joinToString("\n") { c1 ->
+                    val letC = MasuSheetConfig.formatColumnLabel(c1 - 1)
+                    "    Range(\"$letC$totalRow1Based\").Formula = \"=SUM(${letC}$dataR0:${letC}$dataR1)\""
+                }
+                val labelLine = if (firstColIsNumeric && tblC0 == 1) "" else "    Range(\"$totalLabelColLet$totalRow1Based\").Value = \"全体合計\"\n"
+                """
+                Sub ConvertTaxAndAddTotals()
+                    ' 数値範囲を税込(1.1倍)に変換し、合計列($sumColLet)と合計行(${totalRow1Based}行目)を追加します
+                    For r = $dataR0 To $dataR1
+                        For c = $dataC0 To $dataC1
+                            Cells(r, c).MultiplyBy = 1.1
+                        Next c
+                    Next r
+                    Range("$sumColLet$hdrRow").Value = "合計"
+                    Range("$sumColLet$hdrRow").Font.Bold = True
+                    For r = $dataR0 To $dataR1
+                        Cells(r, $sumColIdx1Based).Formula = "=SUM($startValColLet" & r & ":$endValColLet" & r & ")"
+                    Next r
+                $labelLine$colSumLines
+                    Range("$totalLabelColLet$totalRow1Based:$sumColLet$totalRow1Based").Font.Bold = True
+                    Range("$totalLabelColLet$totalRow1Based:$sumColLet$totalRow1Based").Interior.Color = RGB(232, 245, 233)
+                    MsgBox "税込(10%)変換と合計行・合計列の追加が完了しました！"
+                End Sub
+                """.trimIndent()
+            }
+
+            wantsTax -> """
                 Sub ConvertToTaxIncluded()
-                    ' 選択範囲 ($selRange) の数値を税込（1.1倍）に変換します
-                    For r = ${max(2, r0)} To ${max(5, r1)}
-                        For c = ${max(2, c0)} To ${max(4, c1)}
+                    ' 対象範囲 ($selRange) の数値を税込（1.1倍）に変換します
+                    For r = $dataR0 To $dataR1
+                        For c = $dataC0 To $dataC1
                             Cells(r, c).MultiplyBy = 1.1
                         Next c
                     Next r
@@ -532,48 +672,59 @@ object MacroStudioEngine {
                 End Sub
             """.trimIndent()
 
-            p.contains("合計") || p.contains("集計") || p.contains("SUM", ignoreCase = true) -> """
+            wantsSum -> {
+                val colSumLines = (firstValCol1Based..sumColIdx1Based).joinToString("\n") { c1 ->
+                    val letC = MasuSheetConfig.formatColumnLabel(c1 - 1)
+                    "    Range(\"$letC$totalRow1Based\").Formula = \"=SUM(${letC}$dataR0:${letC}$dataR1)\""
+                }
+                val labelLine = if (firstColIsNumeric && tblC0 == 1) "" else "    Range(\"$totalLabelColLet$totalRow1Based\").Value = \"合計\"\n"
+                """
                 Sub InsertRowAndColumnTotals()
                     ' 各行と各列の合計（SUM関数）を自動挿入します
-                    Range("E1").Value = "合計"
-                    Range("E1").Font.Bold = True
-                    For r = 2 To 5
-                        Cells(r, 5).Formula = "=SUM(B" & r & ":D" & r & ")"
+                    Range("$sumColLet$hdrRow").Value = "合計"
+                    Range("$sumColLet$hdrRow").Font.Bold = True
+                    For r = $dataR0 To $dataR1
+                        Cells(r, $sumColIdx1Based).Formula = "=SUM($startValColLet" & r & ":$endValColLet" & r & ")"
                     Next r
-                    Range("A6").Value = "合計"
-                    Range("B6").Formula = "=SUM(B2:B5)"
-                    Range("C6").Formula = "=SUM(C2:C5)"
-                    Range("D6").Formula = "=SUM(D2:D5)"
-                    Range("E6").Formula = "=SUM(E2:E5)"
-                    Range("A6:E6").Font.Bold = True
-                    Range("A6:E6").Interior.Color = RGB(232, 245, 233)
+                $labelLine$colSumLines
+                    Range("$totalLabelColLet$totalRow1Based:$sumColLet$totalRow1Based").Font.Bold = True
+                    Range("$totalLabelColLet$totalRow1Based:$sumColLet$totalRow1Based").Interior.Color = RGB(232, 245, 233)
                     MsgBox "合計行・合計列を追加しました！"
                 End Sub
-            """.trimIndent()
+                """.trimIndent()
+            }
 
-            p.contains("連番") || p.contains("番号") -> """
+            p.contains("連番") || p.contains("番号") || pLower.contains("sequence") -> """
                 Sub FillSequenceNumbers()
-                    ' A列に 1 から 10 までの連番を自動入力します
-                    Range("A1").Value = "No."
-                    Range("A1").Font.Bold = True
-                    For r = 2 To 11
-                        Cells(r, 1).Value = r - 1
+                    ' ${firstColLet}列に連番を自動入力します
+                    Range("${firstColLet}1").Value = "No."
+                    Range("${firstColLet}1").Font.Bold = True
+                    For r = 2 To ${max(11, tblR1)}
+                        Cells(r, $tblC0).Value = r - 1
                     Next r
                     MsgBox "連番の入力が完了しました！"
                 End Sub
             """.trimIndent()
 
-            else -> """
+            else -> {
+                val hdrFillRgb = when {
+                    p.contains("緑") || pLower.contains("green") -> "RGB(46, 125, 50)"
+                    p.contains("赤") || pLower.contains("red") -> "RGB(198, 40, 40)"
+                    else -> "RGB(68, 114, 196)"
+                }
+                val headerRange = explicitRangeMatch?.value?.uppercase() ?: "${firstColLet}$tblR0:${endValColLet}$tblR0"
+                """
                 Sub AutoFormatTableMacro()
                     ' AI生成マクロ: 「$p」
-                    Range("A1:D1").Interior.Color = RGB(68, 114, 196)
-                    Range("A1:D1").Font.Color = RGB(255, 255, 255)
-                    Range("A1:D1").Font.Bold = True
+                    Range("$headerRange").Interior.Color = $hdrFillRgb
+                    Range("$headerRange").Font.Color = RGB(255, 255, 255)
+                    Range("$headerRange").Font.Bold = True
                     Range("$selRange").Borders.LineStyle = xlContinuous
-                    Columns("A:D").AutoFit
+                    Columns("$firstColLet:$endValColLet").AutoFit
                     MsgBox "マクロ「$p」の実行が完了しました！"
                 End Sub
-            """.trimIndent()
+                """.trimIndent()
+            }
         }
     }
 

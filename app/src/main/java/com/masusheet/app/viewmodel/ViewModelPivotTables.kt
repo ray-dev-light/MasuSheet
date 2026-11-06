@@ -178,6 +178,18 @@ fun MasuSheetViewModel.onInsertOrOpenPivotTable(
     )
 }
 
+internal inline fun MasuSheetViewModel.runWithPivotUndoGroup(block: () -> Unit) {
+    val preSnap = captureCustomOverlaySnapshot()
+    val depthBefore = _uiState.value.viewport.undoDepth
+    block()
+    val depthAfter = _uiState.value.viewport.undoDepth
+    val steps = (depthAfter - depthBefore).coerceAtLeast(0)
+    val postSnap = captureCustomOverlaySnapshot()
+    if (steps > 0 || postSnap != preSnap) {
+        pushCustomOverlayUndoSnapshot(preSnap.copy(engineStepsCount = steps))
+    }
+}
+
 /**
  * [EN] Extracts `(uniqueHeaders, numericFieldSet, rowRecordMaps)` from `(startRow..endRow, startCol..endCol)` on `snap` (skipping `合計`/`Total` footer rows).
  * [JA] 指定セル範囲から重複解消済み見出しリスト・数値列セット・行レコード辞書リスト（末尾の合計行を除外）を抽出します。
@@ -208,11 +220,7 @@ internal fun MasuSheetViewModel.extractSourceTableRecords(
 
     for (r in (startRow + 1)..endRow) {
         val firstColText = snap.cellAt(r, startCol)?.displayText?.trim().orEmpty()
-        if (firstColText.equals("合計", ignoreCase = true) ||
-            firstColText.equals("総計", ignoreCase = true) ||
-            firstColText.equals("Total", ignoreCase = true) ||
-            firstColText.equals("Grand Total", ignoreCase = true)
-        ) {
+        if (isSummaryFooterRowLabel(firstColText)) {
             continue
         }
         val rowMap = linkedMapOf<String, String>()
@@ -221,10 +229,15 @@ internal fun MasuSheetViewModel.extractSourceTableRecords(
             val cell = snap.cellAt(r, c)
             val rawEdit = cell?.editText?.trim().orEmpty()
             val disp = cell?.displayText?.trim().orEmpty()
-            val cleanedNum = disp.replace("¥", "").replace("$", "").replace(",", "").replace("%", "").trim()
-            val valueStr = if (cleanedNum.toDoubleOrNull() != null) {
-                if (disp.endsWith("%") && !rawEdit.startsWith("=") && rawEdit.toDoubleOrNull() != null) {
-                    rawEdit
+            val cleanedNum = disp.replace("¥", "").replace("￥", "").replace("$", "").replace(",", "").replace("%", "").trim()
+            val parsedClean = cleanedNum.toDoubleOrNull()
+            val valueStr = if (parsedClean != null) {
+                if (disp.endsWith("%")) {
+                    if (!rawEdit.startsWith("=") && !rawEdit.endsWith("%") && rawEdit.toDoubleOrNull() != null) {
+                        rawEdit
+                    } else {
+                        (parsedClean / 100.0).toString()
+                    }
                 } else {
                     cleanedNum
                 }
@@ -254,6 +267,83 @@ internal fun MasuSheetViewModel.extractSourceTableRecords(
 }
 
 /**
+ * [EN] Detects which columns in `(startRow..endRow, startCol..endCol)` represent monetary values based on cell currency formatting (`¥`, `$`, `"currency"`) and header semantics.
+ * [JA] 元データ範囲の通貨書式（`¥`・`$`・`"currency"`）および列見出し名から、通貨表示すべきフィールド集合を検出します。
+ */
+internal fun MasuSheetViewModel.detectCurrencyFieldsInSourceRange(
+    snap: NativeViewportSnapshot,
+    startRow: Int,
+    startCol: Int,
+    endRow: Int,
+    endCol: Int,
+    headers: List<String>
+): Set<String> {
+    val result = mutableSetOf<String>()
+    for ((idx, c) in (startCol..endCol).withIndex()) {
+        val hdr = headers.getOrNull(idx) ?: continue
+        if (PivotValueFieldSpec.isExplicitNonCurrencyField(hdr)) continue
+        if (PivotValueFieldSpec.isCurrencyFieldByName(hdr)) {
+            result.add(hdr)
+            continue
+        }
+        var numCount = 0
+        var currCount = 0
+        for (r in (startRow + 1)..endRow) {
+            val firstColText = snap.cellAt(r, startCol)?.displayText?.trim().orEmpty()
+            if (isSummaryFooterRowLabel(firstColText)) continue
+            val disp = snap.cellAt(r, c)?.displayText?.trim().orEmpty()
+            if (disp.isEmpty()) continue
+            val cleaned = disp.replace("¥", "").replace("￥", "").replace("$", "").replace(",", "").replace("%", "").trim()
+            if (cleaned.toDoubleOrNull() != null) {
+                numCount++
+                val stKind = customCellStyles[snap.sheetIndex to NativeViewportSnapshot.packCellKey(r, c)]?.numberFormatKind
+                if (stKind == "currency" || disp.contains("¥") || disp.contains("￥") || disp.startsWith("$") || disp.startsWith("-$")) {
+                    currCount++
+                }
+            }
+        }
+        if (currCount > 0 && currCount * 2 >= numCount) {
+            result.add(hdr)
+        }
+    }
+    return result
+}
+
+private fun selectPrioritizedSumValueFields(numFieldsList: List<String>): List<String> {
+    val nonRatio = numFieldsList.filterNot {
+        it.contains("割合") || it.contains("率") || it.contains("構成比") || it.contains("%")
+    }.ifEmpty { numFieldsList }
+    if (nonRatio.size <= 3) return nonRatio
+    val nonUnitRate = nonRatio.filterNot { it.contains("単価") || it.contains("時給") }
+    return when {
+        nonUnitRate.isEmpty() -> nonRatio.take(3)
+        nonUnitRate.size <= 3 -> (nonUnitRate + nonRatio.filter { it.contains("単価") || it.contains("時給") }).take(3)
+        else -> listOf(nonUnitRate[0], nonUnitRate[1], nonUnitRate.last()).distinct()
+    }
+}
+
+private fun orderTextFieldsCategoryFirst(
+    textFields: List<String>,
+    records: List<Map<String, String>>
+): List<String> {
+    if (textFields.size < 2 || records.size < 2) return textFields
+    return textFields.withIndex().sortedWith(
+        compareBy<IndexedValue<String>> { iv ->
+            val distinctCnt = records.mapNotNull { it[iv.value]?.trim()?.takeIf { s -> s.isNotEmpty() } }.distinct().size
+            when {
+                distinctCnt in 2 until records.size -> 0
+                distinctCnt == 1 -> 1
+                else -> 2
+            }
+        }.thenBy { iv ->
+            records.mapNotNull { it[iv.value]?.trim()?.takeIf { s -> s.isNotEmpty() } }.distinct().size
+        }.thenBy { iv ->
+            iv.index
+        }
+    ).map { it.value }
+}
+
+/**
  * [EN] Creates (or updates) a `PivotTableDefinition` from `sourceRangeText` on either a new worksheet or `targetAddress`, then materializes its cells.
  * [JA] 指定された元データ範囲から新規シートまたは指定セル位置にピボットテーブル定義を作成し、集計結果をセルへ展開します。
  */
@@ -263,247 +353,319 @@ fun MasuSheetViewModel.onCreatePivotTable(
     targetAddress: String = "",
     presetKind: String = "standard"
 ): PivotTableDefinition? {
-    val cur = _uiState.value
-    val snap = cur.viewport
-    val existingOnSheet = cur.pivotTables.firstOrNull { it.targetSheetIndex == snap.sheetIndex }
-
-    // Determine source bounds
-    val srcBounds: IntArray = if (existingOnSheet != null && sourceRangeText.isBlank() &&
-        existingOnSheet.containsCell(snap.sheetIndex, snap.activeRow, snap.activeCol)
-    ) {
-        intArrayOf(
-            existingOnSheet.sourceStartRow,
-            existingOnSheet.sourceStartRow + 1,
-            existingOnSheet.sourceEndRow,
-            existingOnSheet.sourceStartCol,
-            existingOnSheet.sourceEndCol
-        )
-    } else if (snap.sheetName == "月間予算" && sourceRangeText.isBlank()) {
-        intArrayOf(10, 11, 23, 0, 5)
-    } else {
-        val cleanRange = sourceRangeText.substringAfterLast('!').trim()
-        val parts = cleanRange.split(':')
-        val p0 = if (parts.isNotEmpty()) parseSingleCellRef(parts[0]) else null
-        val p1 = if (parts.size >= 2) parseSingleCellRef(parts[1]) else p0
-        if (p0 != null && p1 != null && (p0.first != p1.first || p0.second != p1.second)) {
-            val r0 = minOf(p0.first, p1.first)
-            val r1 = maxOf(p0.first, p1.first)
-            val c0 = minOf(p0.second, p1.second)
-            val c1 = maxOf(p0.second, p1.second)
-            intArrayOf(r0, (r0 + 1).coerceAtMost(r1), r1, c0, c1)
+    var createdResult: PivotTableDefinition? = null
+    runWithPivotUndoGroup {
+        val cur = _uiState.value
+        val snap = cur.viewport
+        val parsedTargetExplicit = parseSingleCellRef(targetAddress.substringAfterLast('!'))
+        val existingOnSheet = if (placeOnNewSheet) {
+            null
         } else {
-            detectTableBoundsAt(snap, snap.activeRow, snap.activeCol)
-        }
-    }
-
-    val srcR0 = srcBounds[0]
-    val srcR1 = srcBounds[2]
-    val srcC0 = srcBounds[3]
-    val srcC1 = srcBounds[4]
-
-    val (extractedHeaders, extractedNumeric, extractedRecords) = extractSourceTableRecords(
-        snap = snap,
-        startRow = srcR0,
-        startCol = srcC0,
-        endRow = srcR1,
-        endCol = srcC1
-    )
-
-    val isMonthlyBudgetSheet = snap.sheetName == "月間予算"
-    val headers = if (extractedHeaders.isNotEmpty() && extractedRecords.isNotEmpty()) {
-        extractedHeaders
-    } else if (existingOnSheet != null && existingOnSheet.availableFields.isNotEmpty()) {
-        existingOnSheet.availableFields
-    } else if (isMonthlyBudgetSheet) {
-        listOf("カテゴリ", "項目", "予算(円)", "実績(円)", "差額(円)")
-    } else {
-        extractedHeaders.ifEmpty { listOf("項目", "値") }
-    }
-    val numericFields = if (extractedRecords.isNotEmpty()) {
-        extractedNumeric
-    } else if (existingOnSheet != null && existingOnSheet.numericFields.isNotEmpty()) {
-        existingOnSheet.numericFields
-    } else if (isMonthlyBudgetSheet) {
-        setOf("予算(円)", "実績(円)", "差額(円)")
-    } else {
-        extractedNumeric
-    }
-    val records = if (extractedRecords.isNotEmpty()) {
-        extractedRecords
-    } else {
-        existingOnSheet?.sourceRecords ?: emptyList()
-    }
-
-    val textFields = headers.filter { it !in numericFields }
-    val numFieldsList = headers.filter { it in numericFields }
-
-    val defaultRowFields: List<String>
-    val defaultColFields: List<String>
-    val defaultFilterFields: List<String>
-    val defaultValueFields: List<PivotValueFieldSpec>
-
-    when (presetKind) {
-        "hierarchy" -> {
-            defaultRowFields = textFields.take(2).ifEmpty { headers.take(1) }
-            defaultColFields = emptyList()
-            defaultFilterFields = emptyList()
-            defaultValueFields = numFieldsList.filterNot { it.contains("割合") || it.contains("率") }
-                .ifEmpty { numFieldsList }
-                .take(3)
-                .map { PivotValueFieldSpec(it, PivotAggFunction.SUM) }
-                .ifEmpty { listOf(PivotValueFieldSpec(headers.last(), PivotAggFunction.COUNT)) }
-        }
-        "crosstab" -> {
-            defaultRowFields = textFields.take(1).ifEmpty { headers.take(1) }
-            defaultColFields = if (textFields.size >= 2) listOf(textFields[1]) else emptyList()
-            defaultFilterFields = emptyList()
-            val primaryVal = numFieldsList.firstOrNull { !it.contains("割合") && !it.contains("率") }
-                ?: numFieldsList.firstOrNull()
-                ?: headers.last()
-            defaultValueFields = listOf(
-                PivotValueFieldSpec(
-                    primaryVal,
-                    if (primaryVal in numericFields) PivotAggFunction.SUM else PivotAggFunction.COUNT
-                )
-            )
-        }
-        "average_percent" -> {
-            defaultRowFields = textFields.take(1).ifEmpty { headers.take(1) }
-            defaultColFields = emptyList()
-            defaultFilterFields = if (textFields.size >= 2) listOf(textFields[1]) else emptyList()
-            val primaryVal = numFieldsList.firstOrNull { !it.contains("割合") && !it.contains("率") }
-                ?: numFieldsList.firstOrNull()
-                ?: headers.last()
-            val secondaryVal = numFieldsList.drop(1).firstOrNull() ?: primaryVal
-            defaultValueFields = listOf(
-                PivotValueFieldSpec(primaryVal, PivotAggFunction.SUM),
-                PivotValueFieldSpec(primaryVal, PivotAggFunction.PERCENT_OF_TOTAL),
-                PivotValueFieldSpec(secondaryVal, PivotAggFunction.AVERAGE)
-            )
-        }
-        else -> {
-            defaultRowFields = textFields.take(1).ifEmpty { headers.take(1) }
-            defaultColFields = emptyList()
-            defaultFilterFields = emptyList()
-            defaultValueFields = numFieldsList.filterNot { it.contains("割合") || it.contains("率") }
-                .ifEmpty { numFieldsList }
-                .take(3)
-                .map { PivotValueFieldSpec(it, PivotAggFunction.SUM) }
-                .ifEmpty { listOf(PivotValueFieldSpec(headers.last(), PivotAggFunction.COUNT)) }
-        }
-    }
-
-    val srcSheetIndex = snap.sheetIndex
-    val srcSheetName = snap.sheetName
-
-    val destSheetIndex: Int
-    val destRow: Int
-    val destCol: Int
-
-    if (placeOnNewSheet) {
-        val pivotSheetTitle = if (cur.language == "en") {
-            "Pivot_${cur.pivotTables.size + 1}"
-        } else {
-            "ピボット集計${cur.pivotTables.size + 1}"
-        }
-        onAddSheet()
-        val addedSheetIdx = _uiState.value.viewport.sheetIndex
-        if (addedSheetIdx == srcSheetIndex) {
-            val isEn = cur.language == "en"
-            _uiState.value = _uiState.value.copy(
-                errorMessage = if (isEn) {
-                    "Failed to create new PivotTable sheet; source worksheet was kept untouched."
+            cur.pivotTables.firstOrNull { it.containsCell(snap.sheetIndex, snap.activeRow, snap.activeCol) }
+                ?: if (parsedTargetExplicit == null && sourceRangeText.isBlank()) {
+                    cur.pivotTables.firstOrNull { it.id == cur.activePivotTableId && it.targetSheetIndex == snap.sheetIndex }
                 } else {
-                    "ピボット用の新規シート作成に失敗したため、元データ保護のため処理を中断しました。"
+                    null
                 }
+        }
+
+        // Resolve source sheet (supporting cross-sheet 'Sheet2!A1:D10' and preserving existingOnSheet's source sheet!)
+        var srcSheetIndex = snap.sheetIndex
+        var srcSheetName = snap.sheetName
+        if (sourceRangeText.contains('!')) {
+            val rawPrefix = sourceRangeText.substringBeforeLast('!').trim().removeSurrounding("'")
+            val visPos = snap.sheetNames.indexOfFirst { it.equals(rawPrefix, ignoreCase = true) }
+            if (visPos >= 0) {
+                srcSheetIndex = snap.visibleSheetIndices.getOrElse(visPos) { visPos }
+                srcSheetName = snap.sheetNames[visPos]
+            } else {
+                val hidPos = snap.hiddenSheetNames.indexOfFirst { it.equals(rawPrefix, ignoreCase = true) }
+                if (hidPos >= 0) {
+                    srcSheetIndex = snap.hiddenSheetIndices.getOrElse(hidPos) { hidPos }
+                    srcSheetName = snap.hiddenSheetNames[hidPos]
+                }
+            }
+        } else if (existingOnSheet != null && sourceRangeText.isBlank()) {
+            srcSheetIndex = existingOnSheet.sourceSheetIndex
+            srcSheetName = existingOnSheet.sourceSheetName
+        }
+
+        val sourceSnap: NativeViewportSnapshot = if (srcSheetIndex == snap.sheetIndex) {
+            snap
+        } else {
+            val remoteCells = engineGateway.readSheetCells(srcSheetIndex)
+            snap.copy(sheetIndex = srcSheetIndex, sheetName = srcSheetName, cells = remoteCells)
+        }
+
+        // Determine source bounds
+        val srcBounds: IntArray = if (existingOnSheet != null && sourceRangeText.isBlank()) {
+            intArrayOf(
+                existingOnSheet.sourceStartRow,
+                existingOnSheet.sourceStartRow + 1,
+                existingOnSheet.sourceEndRow,
+                existingOnSheet.sourceStartCol,
+                existingOnSheet.sourceEndCol
             )
-            return null
-        }
-        onRenameSheetAt(addedSheetIdx, pivotSheetTitle)
-        destSheetIndex = _uiState.value.viewport.sheetIndex
-        destRow = 1
-        destCol = 0
-    } else {
-        destSheetIndex = srcSheetIndex
-        val parsedTarget = parseSingleCellRef(targetAddress.substringAfterLast('!'))
-        if (parsedTarget != null) {
-            destRow = parsedTarget.first
-            destCol = parsedTarget.second
-        } else if (existingOnSheet != null) {
-            destRow = existingOnSheet.targetStartRow
-            destCol = existingOnSheet.targetStartCol
-        } else if (srcSheetName == "月間予算") {
-            destRow = 10
-            destCol = 7
+        } else if (srcSheetName == "月間予算" && sourceRangeText.isBlank()) {
+            intArrayOf(10, 11, 23, 0, 5)
         } else {
-            destRow = srcR0.coerceAtLeast(1)
-            destCol = (srcC1 + 2).coerceAtMost(14)
+            val cleanRange = sourceRangeText.substringAfterLast('!').trim()
+            val parts = cleanRange.split(':')
+            val p0 = if (parts.isNotEmpty()) parseSingleCellRef(parts[0]) else null
+            val p1 = if (parts.size >= 2) parseSingleCellRef(parts[1]) else p0
+            if (p0 != null && p1 != null && (p0.first != p1.first || p0.second != p1.second)) {
+                val r0 = minOf(p0.first, p1.first)
+                val r1 = maxOf(p0.first, p1.first)
+                val c0 = minOf(p0.second, p1.second)
+                val c1 = maxOf(p0.second, p1.second)
+                intArrayOf(r0, (r0 + 1).coerceAtMost(r1), r1, c0, c1)
+            } else {
+                detectTableBoundsAt(sourceSnap, sourceSnap.activeRow, sourceSnap.activeCol, excludePivotFootprints = true)
+            }
         }
-    }
 
-    val pivotId = if (!placeOnNewSheet && existingOnSheet != null) {
-        existingOnSheet.id
-    } else {
-        "pivot_${destSheetIndex}_${System.currentTimeMillis() % 100000}"
-    }
-    val pivotName = if (!placeOnNewSheet && existingOnSheet != null) {
-        existingOnSheet.name
-    } else {
-        if (cur.language == "en") "PivotTable${cur.pivotTables.size + 1}" else "ピボットテーブル${cur.pivotTables.size + 1}"
-    }
+        val srcR0 = srcBounds[0]
+        val srcC0 = srcBounds[3]
+        val srcC1 = srcBounds[4]
+        var srcR1 = srcBounds[2]
+        if (sourceSnap.cells.isNotEmpty()) {
+            while (srcR1 > srcR0 + 1) {
+                val firstColTxt = sourceSnap.cellAt(srcR1, srcC0)?.displayText?.trim().orEmpty()
+                if (isSummaryFooterRowLabel(firstColTxt)) {
+                    srcR1--
+                } else {
+                    break
+                }
+            }
+        }
 
-    val newPivot = PivotTableDefinition(
-        id = pivotId,
-        name = pivotName,
-        sourceSheetIndex = srcSheetIndex,
-        sourceSheetName = srcSheetName,
-        sourceStartRow = srcR0,
-        sourceStartCol = srcC0,
-        sourceEndRow = srcR1,
-        sourceEndCol = srcC1,
-        targetSheetIndex = destSheetIndex,
-        targetStartRow = destRow,
-        targetStartCol = destCol,
-        lastRenderedStartRow = existingOnSheet?.lastRenderedStartRow ?: destRow,
-        lastRenderedEndRow = existingOnSheet?.lastRenderedEndRow ?: (destRow + 8),
-        lastRenderedEndCol = existingOnSheet?.lastRenderedEndCol ?: (destCol + 3),
-        availableFields = headers,
-        numericFields = numericFields,
-        sourceRecords = records,
-        filterFields = defaultFilterFields,
-        columnFields = defaultColFields,
-        rowFields = defaultRowFields,
-        valueFields = defaultValueFields,
-        stylePreset = existingOnSheet?.stylePreset ?: cur.pivotStylePreset,
-        reportLayout = if (presetKind == "hierarchy") "tabular" else (existingOnSheet?.reportLayout ?: cur.pivotReportLayout),
-        subtotalsMode = existingOnSheet?.subtotalsMode ?: cur.pivotSubtotalsMode,
-        grandTotalsMode = existingOnSheet?.grandTotalsMode ?: cur.pivotGrandTotalsMode,
-        repeatLabels = existingOnSheet?.repeatLabels ?: cur.pivotRepeatLabels,
-        blankRows = existingOnSheet?.blankRows ?: cur.pivotBlankRows,
-        bandedRows = existingOnSheet?.bandedRows ?: cur.pivotBandedRows,
-        bandedCols = existingOnSheet?.bandedCols ?: cur.pivotBandedCols
-    )
-
-    val currentPivots = _uiState.value.pivotTables.filterNot { it.id == pivotId } + newPivot
-    _uiState.value = _uiState.value.copy(
-        pivotTables = currentPivots,
-        activePivotTableId = pivotId,
-        isPivotFieldsPaneOpen = true,
-        isCreatePivotDialogOpen = false,
-        dismissedPivotLauncherIds = _uiState.value.dismissedPivotLauncherIds - pivotId,
-        activeRibbonTab = "pivotAnalyze"
-    )
-    materializePivotTable(pivotId)
-    onSelectCell(destRow, destCol)
-    val isEn = _uiState.value.language == "en"
-    _uiState.value = _uiState.value.copy(
-        statusNoticeMessage = if (isEn) {
-            "Created ${newPivot.name} (${newPivot.sourceRangeLabel}) and opened PivotTable Fields"
+        val (extractedHeaders, extractedNumeric, extractedRecords) = if (sourceSnap.cells.isNotEmpty()) {
+            extractSourceTableRecords(
+                snap = sourceSnap,
+                startRow = srcR0,
+                startCol = srcC0,
+                endRow = srcR1,
+                endCol = srcC1
+            )
         } else {
-            "「${newPivot.name}」（元データ: ${newPivot.sourceRangeLabel}）を作成し、ピボットテーブルのフィールドを開きました"
+            Triple(emptyList(), emptySet(), emptyList())
         }
-    )
-    return _uiState.value.pivotTables.firstOrNull { it.id == pivotId }
+
+        val isMonthlyBudgetSheet = srcSheetName == "月間予算"
+        val fallbackEmptyHeaders = if (cur.language == "en") listOf("Item", "Value") else listOf("項目", "値")
+        val headers = if (extractedHeaders.isNotEmpty() && extractedRecords.isNotEmpty()) {
+            extractedHeaders
+        } else if (existingOnSheet != null && existingOnSheet.availableFields.isNotEmpty()) {
+            existingOnSheet.availableFields
+        } else if (isMonthlyBudgetSheet) {
+            listOf("カテゴリ", "項目", "予算(円)", "実績(円)", "差額(円)")
+        } else {
+            extractedHeaders.ifEmpty { fallbackEmptyHeaders }
+        }
+        val numericFields = if (extractedRecords.isNotEmpty()) {
+            extractedNumeric
+        } else if (existingOnSheet != null && existingOnSheet.numericFields.isNotEmpty()) {
+            existingOnSheet.numericFields
+        } else if (isMonthlyBudgetSheet) {
+            setOf("予算(円)", "実績(円)", "差額(円)")
+        } else {
+            extractedNumeric
+        }
+        val records = if (extractedRecords.isNotEmpty()) {
+            extractedRecords
+        } else {
+            existingOnSheet?.sourceRecords ?: emptyList()
+        }
+        val currencyFields = if (extractedRecords.isNotEmpty()) {
+            detectCurrencyFieldsInSourceRange(sourceSnap, srcR0, srcC0, srcR1, srcC1, headers)
+        } else if (existingOnSheet != null && existingOnSheet.currencyFields.isNotEmpty()) {
+            existingOnSheet.currencyFields
+        } else if (isMonthlyBudgetSheet) {
+            setOf("予算(円)", "実績(円)", "差額(円)")
+        } else {
+            headers.filter { PivotValueFieldSpec.isCurrencyFieldByName(it) }.toSet()
+        }
+
+        val textFields = headers.filter { it !in numericFields }
+        val orderedTextFields = orderTextFieldsCategoryFirst(textFields, records)
+        val numFieldsList = headers.filter { it in numericFields }
+        fun buildValueSpec(field: String, agg: PivotAggFunction): PivotValueFieldSpec =
+            PivotValueFieldSpec(field, agg, PivotValueFieldSpec.resolveCurrencyLike(field, currencyFields))
+
+        val defaultRowFields: List<String>
+        val defaultColFields: List<String>
+        val defaultFilterFields: List<String>
+        val defaultValueFields: List<PivotValueFieldSpec>
+
+        when (presetKind) {
+            "hierarchy" -> {
+                defaultRowFields = orderedTextFields.take(2).ifEmpty { headers.take(1) }
+                defaultColFields = emptyList()
+                defaultFilterFields = emptyList()
+                defaultValueFields = selectPrioritizedSumValueFields(numFieldsList)
+                    .map { buildValueSpec(it, PivotAggFunction.SUM) }
+                    .ifEmpty { listOf(buildValueSpec(headers.last(), PivotAggFunction.COUNT)) }
+            }
+            "crosstab" -> {
+                defaultRowFields = textFields.take(1).ifEmpty { headers.take(1) }
+                defaultColFields = if (textFields.size >= 2) listOf(textFields[1]) else emptyList()
+                defaultFilterFields = emptyList()
+                val primaryVal = selectPrioritizedSumValueFields(numFieldsList).lastOrNull()
+                    ?: numFieldsList.firstOrNull()
+                    ?: headers.last()
+                defaultValueFields = listOf(
+                    buildValueSpec(
+                        primaryVal,
+                        if (primaryVal in numericFields) PivotAggFunction.SUM else PivotAggFunction.COUNT
+                    )
+                )
+            }
+            "average_percent" -> {
+                defaultRowFields = orderedTextFields.take(1).ifEmpty { headers.take(1) }
+                defaultColFields = emptyList()
+                defaultFilterFields = if (orderedTextFields.size >= 2) listOf(orderedTextFields[1]) else emptyList()
+                val chosenSums = selectPrioritizedSumValueFields(numFieldsList)
+                val primaryVal = chosenSums.lastOrNull()
+                    ?: numFieldsList.firstOrNull()
+                    ?: headers.last()
+                val secondaryVal = chosenSums.firstOrNull { it != primaryVal } ?: primaryVal
+                defaultValueFields = listOf(
+                    buildValueSpec(primaryVal, PivotAggFunction.SUM),
+                    buildValueSpec(primaryVal, PivotAggFunction.PERCENT_OF_TOTAL),
+                    buildValueSpec(secondaryVal, PivotAggFunction.AVERAGE)
+                )
+            }
+            else -> {
+                defaultRowFields = orderedTextFields.take(1).ifEmpty { headers.take(1) }
+                defaultColFields = emptyList()
+                defaultFilterFields = emptyList()
+                defaultValueFields = selectPrioritizedSumValueFields(numFieldsList)
+                    .map { buildValueSpec(it, PivotAggFunction.SUM) }
+                    .ifEmpty { listOf(buildValueSpec(headers.last(), PivotAggFunction.COUNT)) }
+            }
+        }
+
+        val destSheetIndex: Int
+        val destRow: Int
+        val destCol: Int
+
+        if (placeOnNewSheet) {
+            val currentSheetIndexBeforeAdd = snap.sheetIndex
+            val pivotSheetTitle = if (cur.language == "en") {
+                "Pivot_${cur.pivotTables.size + 1}"
+            } else {
+                "ピボット集計${cur.pivotTables.size + 1}"
+            }
+            onAddSheet()
+            val addedSheetIdx = _uiState.value.viewport.sheetIndex
+            if (addedSheetIdx == currentSheetIndexBeforeAdd) {
+                val isEn = cur.language == "en"
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = if (isEn) {
+                        "Failed to create new PivotTable sheet; source worksheet was kept untouched."
+                    } else {
+                        "ピボット用の新規シート作成に失敗したため、元データ保護のため処理を中断しました。"
+                    }
+                )
+                return@runWithPivotUndoGroup
+            }
+            onRenameSheetAt(addedSheetIdx, pivotSheetTitle)
+            destSheetIndex = _uiState.value.viewport.sheetIndex
+            destRow = 1
+            destCol = 0
+        } else {
+            destSheetIndex = snap.sheetIndex
+            if (parsedTargetExplicit != null) {
+                destRow = parsedTargetExplicit.first
+                destCol = parsedTargetExplicit.second
+            } else if (existingOnSheet != null) {
+                destRow = existingOnSheet.targetStartRow
+                destCol = existingOnSheet.targetStartCol
+            } else if (snap.sheetName == "月間予算") {
+                destRow = 10
+                destCol = 7
+            } else {
+                val occupiedRightEdge = cur.pivotTables
+                    .filter { it.targetSheetIndex == destSheetIndex }
+                    .maxOfOrNull { maxOf(it.targetStartCol, it.lastRenderedEndCol) }
+                destRow = if (srcSheetIndex == destSheetIndex) srcR0.coerceAtLeast(1) else 1
+                destCol = if (occupiedRightEdge != null) {
+                    (occupiedRightEdge + 2).coerceAtMost(24)
+                } else if (srcSheetIndex == destSheetIndex) {
+                    (srcC1 + 2).coerceAtMost(14)
+                } else {
+                    0
+                }
+            }
+        }
+
+        val pivotId = if (!placeOnNewSheet && existingOnSheet != null) {
+            existingOnSheet.id
+        } else {
+            "pivot_${destSheetIndex}_${cur.pivotTables.size + 1}_${System.currentTimeMillis() % 100000}"
+        }
+        val pivotName = if (!placeOnNewSheet && existingOnSheet != null) {
+            existingOnSheet.name
+        } else {
+            if (cur.language == "en") "PivotTable${cur.pivotTables.size + 1}" else "ピボットテーブル${cur.pivotTables.size + 1}"
+        }
+
+        val newPivot = PivotTableDefinition(
+            id = pivotId,
+            name = pivotName,
+            sourceSheetIndex = srcSheetIndex,
+            sourceSheetName = srcSheetName,
+            sourceStartRow = srcR0,
+            sourceStartCol = srcC0,
+            sourceEndRow = srcR1,
+            sourceEndCol = srcC1,
+            targetSheetIndex = destSheetIndex,
+            targetStartRow = destRow,
+            targetStartCol = destCol,
+            lastRenderedStartRow = existingOnSheet?.lastRenderedStartRow ?: destRow,
+            lastRenderedEndRow = existingOnSheet?.lastRenderedEndRow ?: (destRow - 1),
+            lastRenderedStartCol = existingOnSheet?.lastRenderedStartCol ?: destCol,
+            lastRenderedEndCol = existingOnSheet?.lastRenderedEndCol ?: (destCol - 1),
+            availableFields = headers,
+            numericFields = numericFields,
+            currencyFields = currencyFields,
+            sourceRecords = records,
+            filterFields = defaultFilterFields,
+            columnFields = defaultColFields,
+            rowFields = defaultRowFields,
+            valueFields = defaultValueFields,
+            stylePreset = existingOnSheet?.stylePreset ?: cur.pivotStylePreset,
+            reportLayout = if (presetKind == "hierarchy") "tabular" else (existingOnSheet?.reportLayout ?: cur.pivotReportLayout),
+            subtotalsMode = existingOnSheet?.subtotalsMode ?: cur.pivotSubtotalsMode,
+            grandTotalsMode = existingOnSheet?.grandTotalsMode ?: cur.pivotGrandTotalsMode,
+            repeatLabels = existingOnSheet?.repeatLabels ?: cur.pivotRepeatLabels,
+            blankRows = existingOnSheet?.blankRows ?: cur.pivotBlankRows,
+            bandedRows = existingOnSheet?.bandedRows ?: cur.pivotBandedRows,
+            bandedCols = existingOnSheet?.bandedCols ?: cur.pivotBandedCols
+        )
+
+        val currentPivots = _uiState.value.pivotTables.filterNot { it.id == pivotId } + newPivot
+        _uiState.value = _uiState.value.copy(
+            pivotTables = currentPivots,
+            activePivotTableId = pivotId,
+            isPivotFieldsPaneOpen = true,
+            isCreatePivotDialogOpen = false,
+            dismissedPivotLauncherIds = _uiState.value.dismissedPivotLauncherIds - pivotId,
+            activeRibbonTab = "pivotAnalyze"
+        )
+        materializePivotTable(pivotId)
+        onSelectCell(destRow, destCol)
+        val isEn = _uiState.value.language == "en"
+        _uiState.value = _uiState.value.copy(
+            statusNoticeMessage = if (isEn) {
+                "Created ${newPivot.name} (${newPivot.sourceRangeLabel}) and opened PivotTable Fields"
+            } else {
+                "「${newPivot.name}」（元データ: ${newPivot.sourceRangeLabel}）を作成し、ピボットテーブルのフィールドを開きました"
+            }
+        )
+        createdResult = _uiState.value.pivotTables.firstOrNull { it.id == pivotId }
+    }
+    return createdResult
 }
 
 /**
@@ -581,25 +743,27 @@ internal fun MasuSheetViewModel.updateActivePivotAndMaterialize(
         )
         return
     }
-    val updated = transform(active)
-    val nextList = cur.pivotTables.map { if (it.id == updated.id) updated else it }
-    _uiState.value = cur.copy(
-        pivotTables = nextList,
-        activePivotTableId = updated.id,
-        pivotSubtotalsMode = updated.subtotalsMode,
-        pivotGrandTotalsMode = updated.grandTotalsMode,
-        pivotReportLayout = updated.reportLayout,
-        pivotRepeatLabels = updated.repeatLabels,
-        pivotBlankRows = updated.blankRows,
-        pivotBandedRows = updated.bandedRows,
-        pivotBandedCols = updated.bandedCols,
-        pivotStylePreset = updated.stylePreset
-    )
-    materializePivotTable(updated.id)
-    val isEn = _uiState.value.language == "en"
-    _uiState.value = _uiState.value.copy(
-        statusNoticeMessage = if (isEn) noticeEn else noticeJa
-    )
+    runWithPivotUndoGroup {
+        val updated = transform(active)
+        val nextList = cur.pivotTables.map { if (it.id == updated.id) updated else it }
+        _uiState.value = cur.copy(
+            pivotTables = nextList,
+            activePivotTableId = updated.id,
+            pivotSubtotalsMode = updated.subtotalsMode,
+            pivotGrandTotalsMode = updated.grandTotalsMode,
+            pivotReportLayout = updated.reportLayout,
+            pivotRepeatLabels = updated.repeatLabels,
+            pivotBlankRows = updated.blankRows,
+            pivotBandedRows = updated.bandedRows,
+            pivotBandedCols = updated.bandedCols,
+            pivotStylePreset = updated.stylePreset
+        )
+        materializePivotTable(updated.id)
+        val isEn = _uiState.value.language == "en"
+        _uiState.value = _uiState.value.copy(
+            statusNoticeMessage = if (isEn) noticeEn else noticeJa
+        )
+    }
 }
 
 /**
@@ -647,19 +811,22 @@ fun MasuSheetViewModel.onAssignPivotFieldToArea(fieldName: String, area: String)
             "row" -> if (fieldName !in nextRows) nextRows.add(fieldName)
             "value" -> {
                 val defaultAgg = if (fieldName in p.numericFields) PivotAggFunction.SUM else PivotAggFunction.COUNT
+                val isCurr = PivotValueFieldSpec.resolveCurrencyLike(fieldName, p.currencyFields)
                 if (nextVals.none { it.fieldName == fieldName }) {
-                    nextVals.add(PivotValueFieldSpec(fieldName, defaultAgg))
+                    nextVals.add(PivotValueFieldSpec(fieldName, defaultAgg, isCurr))
                 } else {
                     val existingAggs = nextVals.filter { it.fieldName == fieldName }.map { it.agg }.toSet()
                     val altAgg = PivotAggFunction.values().firstOrNull { it !in existingAggs } ?: PivotAggFunction.AVERAGE
-                    nextVals.add(PivotValueFieldSpec(fieldName, altAgg))
+                    nextVals.add(PivotValueFieldSpec(fieldName, altAgg, isCurr))
                 }
             }
         }
         p.copy(
             filterFields = nextFilters,
+            selectedFilterValues = p.selectedFilterValues.filterKeys { it in nextFilters },
             columnFields = nextCols,
             rowFields = nextRows,
+            collapsedRowGroups = if (p.rowFields.firstOrNull() == nextRows.firstOrNull()) p.collapsedRowGroups else emptySet(),
             valueFields = nextVals
         )
     }
@@ -687,7 +854,13 @@ fun MasuSheetViewModel.onMovePivotFieldInArea(area: String, fieldName: String, d
         when (area.lowercase()) {
             "filter" -> p.copy(filterFields = moveItem(p.filterFields) { it == fieldName })
             "column" -> p.copy(columnFields = moveItem(p.columnFields) { it == fieldName })
-            "row" -> p.copy(rowFields = moveItem(p.rowFields) { it == fieldName })
+            "row" -> {
+                val movedRows = moveItem(p.rowFields) { it == fieldName }
+                p.copy(
+                    rowFields = movedRows,
+                    collapsedRowGroups = if (p.rowFields.firstOrNull() == movedRows.firstOrNull()) p.collapsedRowGroups else emptySet()
+                )
+            }
             "value" -> p.copy(valueFields = moveItem(p.valueFields) { it.fieldName == fieldName })
             else -> p
         }
@@ -852,7 +1025,12 @@ fun MasuSheetViewModel.onSetPivotSubtotalsMode(mode: String) {
  */
 fun MasuSheetViewModel.onSetPivotGrandTotalsMode(mode: String) {
     val clean = mode.lowercase().ifBlank { "both" }
-    val labelJa = if (clean == "none") "総計を表示しない" else "行と列の集計を行う（総計を表示）"
+    val labelJa = when (clean) {
+        "none" -> "総計を表示しない"
+        "rows" -> "行の集計のみ行う"
+        "columns", "cols" -> "列の集計のみ行う"
+        else -> "行と列の集計を行う（総計を表示）"
+    }
     updateActivePivotAndMaterialize(
         noticeJa = "ピボット総計の設定を「$labelJa」に変更しました",
         noticeEn = "Changed grand totals mode to $clean"
@@ -918,61 +1096,83 @@ fun MasuSheetViewModel.onTogglePivotBandedCols() {
  * [JA] ブック全体の数式を再計算し、元データ範囲（別シートのセルも含む）から最新レコードを再取得してピボットテーブルを更新します。
  */
 fun MasuSheetViewModel.onRefreshPivotTable(pivotId: String? = null, refreshAll: Boolean = false) {
-    val calcSnap = engineGateway.executeCommand("formulas.calculateNow", "{}")
-    applyViewportSnapshot(calcSnap)
-    val cur = _uiState.value
+    val curBefore = _uiState.value
     val targets = if (refreshAll) {
-        cur.pivotTables
+        curBefore.pivotTables
     } else {
-        val active = if (pivotId != null) cur.pivotTables.firstOrNull { it.id == pivotId } else getActivePivotTable()
+        val active = if (pivotId != null) curBefore.pivotTables.firstOrNull { it.id == pivotId } else getActivePivotTable()
         listOfNotNull(active)
     }
     if (targets.isEmpty()) {
-        val isEn = cur.language == "en"
-        _uiState.value = cur.copy(
+        val calcSnap = engineGateway.executeCommand("formulas.calculateNow", "{}")
+        applyViewportSnapshot(calcSnap)
+        val isEn = _uiState.value.language == "en"
+        _uiState.value = _uiState.value.copy(
             statusNoticeMessage = if (isEn) "Recalculated all formulas" else "すべての数式を再計算しました"
         )
         return
     }
-    val currentSnap = _uiState.value.viewport
-    val updatedPivots = cur.pivotTables.map { p ->
-        if (targets.any { it.id == p.id }) {
-            val sourceSnap = if (p.sourceSheetIndex == currentSnap.sheetIndex) {
-                currentSnap
-            } else {
-                val remoteCells = engineGateway.readSheetCells(p.sourceSheetIndex)
-                if (remoteCells.isNotEmpty()) {
-                    currentSnap.copy(sheetIndex = p.sourceSheetIndex, cells = remoteCells)
+    runWithPivotUndoGroup {
+        val calcSnap = engineGateway.executeCommand("formulas.calculateNow", "{}")
+        applyViewportSnapshot(calcSnap)
+        val cur = _uiState.value
+        val currentSnap = cur.viewport
+        val updatedPivots = cur.pivotTables.map { p ->
+            if (targets.any { it.id == p.id }) {
+                val sourceSnap = if (p.sourceSheetIndex == currentSnap.sheetIndex) {
+                    currentSnap
                 } else {
-                    null
+                    val remoteCells = engineGateway.readSheetCells(p.sourceSheetIndex)
+                    if (remoteCells.isNotEmpty()) {
+                        currentSnap.copy(sheetIndex = p.sourceSheetIndex, cells = remoteCells)
+                    } else {
+                        null
+                    }
                 }
-            }
-            if (sourceSnap != null) {
-                val (hdrs, numSet, recs) = extractSourceTableRecords(
-                    snap = sourceSnap,
-                    startRow = p.sourceStartRow,
-                    startCol = p.sourceStartCol,
-                    endRow = p.sourceEndRow,
-                    endCol = p.sourceEndCol
-                )
-                if (recs.isNotEmpty()) {
-                    p.copy(availableFields = hdrs, numericFields = numSet, sourceRecords = recs)
+                if (sourceSnap != null) {
+                    val (hdrs, numSet, recs) = extractSourceTableRecords(
+                        snap = sourceSnap,
+                        startRow = p.sourceStartRow,
+                        startCol = p.sourceStartCol,
+                        endRow = p.sourceEndRow,
+                        endCol = p.sourceEndCol
+                    )
+                    if (recs.isNotEmpty()) {
+                        val currSet = detectCurrencyFieldsInSourceRange(
+                            snap = sourceSnap,
+                            startRow = p.sourceStartRow,
+                            startCol = p.sourceStartCol,
+                            endRow = p.sourceEndRow,
+                            endCol = p.sourceEndCol,
+                            headers = hdrs
+                        )
+                        val refreshedValFields = p.valueFields.map { vf ->
+                            vf.copy(isCurrencyLike = PivotValueFieldSpec.resolveCurrencyLike(vf.fieldName, currSet))
+                        }
+                        p.copy(
+                            availableFields = hdrs,
+                            numericFields = numSet,
+                            currencyFields = currSet,
+                            sourceRecords = recs,
+                            valueFields = refreshedValFields
+                        )
+                    } else p
                 } else p
             } else p
-        } else p
-    }
-    _uiState.value = _uiState.value.copy(pivotTables = updatedPivots)
-    for (t in targets) {
-        materializePivotTable(t.id)
-    }
-    val isEn = _uiState.value.language == "en"
-    _uiState.value = _uiState.value.copy(
-        statusNoticeMessage = if (isEn) {
-            "Refreshed PivotTable (${targets.first().name}) from latest source data"
-        } else {
-            "ピボットテーブル「${targets.first().name}」を最新の元データで再集計しました"
         }
-    )
+        _uiState.value = _uiState.value.copy(pivotTables = updatedPivots)
+        for (t in targets) {
+            materializePivotTable(t.id)
+        }
+        val isEn = _uiState.value.language == "en"
+        _uiState.value = _uiState.value.copy(
+            statusNoticeMessage = if (isEn) {
+                "Refreshed PivotTable (${targets.first().name}) from latest source data"
+            } else {
+                "ピボットテーブル「${targets.first().name}」を最新の元データで再集計しました"
+            }
+        )
+    }
 }
 
 /**
@@ -1016,46 +1216,54 @@ fun MasuSheetViewModel.onDeletePivotTable(pivotId: String? = null) {
         )
         return
     }
-    val sIdx = target.targetSheetIndex
-    val switchedSheet = cur.viewport.sheetIndex != sIdx
-    if (switchedSheet) {
-        val actSnap = engineGateway.executeCommand("sheet.activate", "{\"sheet\":$sIdx}")
-        applyViewportSnapshot(actSnap)
-    }
-    val clearR0 = minOf(target.lastRenderedStartRow, target.targetStartRow).coerceAtLeast(0)
-    val clearR1 = maxOf(target.lastRenderedEndRow, target.targetStartRow + 1)
-    val clearC0 = target.targetStartCol.coerceAtLeast(0)
-    val clearC1 = maxOf(target.lastRenderedEndCol, target.targetStartCol + 3)
-
-    var lastSnap = _uiState.value.viewport
-    for (r in clearR0..clearR1) {
-        for (c in clearC0..clearC1) {
-            val addr = MasuSheetConfig.formatCellAddress(r, c)
-            lastSnap = engineGateway.executeCommand("cell.set", "{\"cell\":\"$addr\",\"input\":\"\"}")
-            customCellStyles.remove(sIdx to NativeViewportSnapshot.packCellKey(r, c))
+    runWithPivotUndoGroup {
+        val sIdx = target.targetSheetIndex
+        val origSheetIndex = cur.viewport.sheetIndex
+        val switchedSheet = origSheetIndex != sIdx
+        if (switchedSheet) {
+            val actSnap = engineGateway.executeCommand("sheet.activate", "{\"sheet\":$sIdx}")
+            applyViewportSnapshot(actSnap)
         }
-    }
-    sizeRevisionBump++
-    applyViewportSnapshot(lastSnap)
+        var lastSnap = _uiState.value.viewport
+        if (target.lastRenderedEndRow >= target.lastRenderedStartRow && target.lastRenderedEndCol >= target.lastRenderedStartCol) {
+            val clearR0 = target.lastRenderedStartRow.coerceAtLeast(0)
+            val clearR1 = target.lastRenderedEndRow.coerceAtLeast(clearR0)
+            val clearC0 = target.lastRenderedStartCol.coerceAtLeast(0)
+            val clearC1 = target.lastRenderedEndCol.coerceAtLeast(clearC0)
+            for (r in clearR0..clearR1) {
+                for (c in clearC0..clearC1) {
+                    val addr = MasuSheetConfig.formatCellAddress(r, c)
+                    lastSnap = engineGateway.executeCommand("cell.set", "{\"cell\":\"$addr\",\"input\":\"\"}")
+                    customCellStyles.remove(sIdx to NativeViewportSnapshot.packCellKey(r, c))
+                }
+            }
+        }
+        sizeRevisionBump++
+        applyViewportSnapshot(lastSnap)
+        if (switchedSheet) {
+            val backSnap = engineGateway.executeCommand("sheet.activate", "{\"sheet\":$origSheetIndex}")
+            applyViewportSnapshot(backSnap)
+        }
 
-    val latest = _uiState.value
-    val remaining = latest.pivotTables.filterNot { it.id == target.id }
-    val nextRibbon = if (latest.activeRibbonTab == "pivotAnalyze" || latest.activeRibbonTab == "pivotDesign") {
-        "home"
-    } else {
-        latest.activeRibbonTab
-    }
-    val isEn = latest.language == "en"
-    _uiState.value = latest.copy(
-        pivotTables = remaining,
-        activePivotTableId = null,
-        isPivotFieldsPaneOpen = false,
-        dismissedPivotLauncherIds = latest.dismissedPivotLauncherIds - target.id,
-        activeRibbonTab = nextRibbon,
-        statusNoticeMessage = if (isEn) {
-            "Deleted PivotTable '${target.name}' and cleared its cells from the sheet"
+        val latest = _uiState.value
+        val remaining = latest.pivotTables.filterNot { it.id == target.id }
+        val nextRibbon = if (latest.activeRibbonTab == "pivotAnalyze" || latest.activeRibbonTab == "pivotDesign") {
+            "home"
         } else {
-            "ピボットテーブル「${target.name}」を削除し、シート上の集計表を消去しました"
+            latest.activeRibbonTab
         }
-    )
+        val isEn = latest.language == "en"
+        _uiState.value = latest.copy(
+            pivotTables = remaining,
+            activePivotTableId = null,
+            isPivotFieldsPaneOpen = false,
+            dismissedPivotLauncherIds = latest.dismissedPivotLauncherIds - target.id,
+            activeRibbonTab = nextRibbon,
+            statusNoticeMessage = if (isEn) {
+                "Deleted PivotTable '${target.name}' and cleared its cells from the sheet"
+            } else {
+                "ピボットテーブル「${target.name}」を削除し、シート上の集計表を消去しました"
+            }
+        )
+    }
 }

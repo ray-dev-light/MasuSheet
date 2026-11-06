@@ -257,6 +257,7 @@ object WorkbookHandoffSerializer {
                 .put("targetStartCol", p.targetStartCol)
                 .put("availableFields", JSONArray(p.availableFields))
                 .put("numericFields", JSONArray(p.numericFields.toList()))
+                .put("currencyFields", JSONArray(p.currencyFields.toList()))
                 .put("filterFields", JSONArray(p.filterFields))
                 .put("columnFields", JSONArray(p.columnFields))
                 .put("rowFields", JSONArray(p.rowFields))
@@ -271,6 +272,7 @@ object WorkbookHandoffSerializer {
                 .put("blankRows", p.blankRows)
                 .put("lastRenderedStartRow", p.lastRenderedStartRow)
                 .put("lastRenderedEndRow", p.lastRenderedEndRow)
+                .put("lastRenderedStartCol", p.lastRenderedStartCol)
                 .put("lastRenderedEndCol", p.lastRenderedEndCol)
             val sfObj = JSONObject()
             p.selectedFilterValues.forEach { (fk, fv) -> sfObj.put(fk, fv) }
@@ -502,13 +504,17 @@ object WorkbookHandoffSerializer {
                             sfMap[fk] = sfObj.optString(fk, "")
                         }
                     }
+                    val decodedCurrFields = jsonStrList("currencyFields").toSet()
                     val vfList = mutableListOf<PivotValueFieldSpec>()
                     pj.optJSONArray("valueFields")?.let { vfa ->
                         for (vi in 0 until minOf(vfa.length(), MAX_HANDOFF_SERIES)) {
                             val vfo = vfa.optJSONObject(vi) ?: continue
+                            val fName = vfo.optString("fieldName", "")
                             val agg = runCatching { PivotAggFunction.valueOf(vfo.optString("agg", "SUM")) }
                                 .getOrDefault(PivotAggFunction.SUM)
-                            vfList.add(PivotValueFieldSpec(vfo.optString("fieldName", ""), agg, vfo.optBoolean("curr", true)))
+                            val defaultCurr = PivotValueFieldSpec.resolveCurrencyLike(fName, decodedCurrFields)
+                            val isCurr = vfo.optBoolean("curr", defaultCurr) && !PivotValueFieldSpec.isExplicitNonCurrencyField(fName)
+                            vfList.add(PivotValueFieldSpec(fName, agg, isCurr))
                         }
                     }
                     val recs = mutableListOf<Map<String, String>>()
@@ -539,6 +545,7 @@ object WorkbookHandoffSerializer {
                             targetStartCol = pj.optInt("targetStartCol", 0),
                             availableFields = jsonStrList("availableFields"),
                             numericFields = jsonStrList("numericFields").toSet(),
+                            currencyFields = decodedCurrFields,
                             sourceRecords = recs,
                             filterFields = jsonStrList("filterFields"),
                             selectedFilterValues = sfMap,
@@ -556,6 +563,7 @@ object WorkbookHandoffSerializer {
                             blankRows = pj.optBoolean("blankRows", false),
                             lastRenderedStartRow = pj.optInt("lastRenderedStartRow", 1),
                             lastRenderedEndRow = pj.optInt("lastRenderedEndRow", 1),
+                            lastRenderedStartCol = pj.optInt("lastRenderedStartCol", pj.optInt("targetStartCol", 0)),
                             lastRenderedEndCol = pj.optInt("lastRenderedEndCol", 0)
                         )
                     )

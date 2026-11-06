@@ -16,6 +16,7 @@ import com.masusheet.app.model.NativeCellModel
 import com.masusheet.app.model.NativeMergeRange
 import com.masusheet.app.model.NativeSheetObject
 import com.masusheet.app.model.NativeViewportSnapshot
+import com.masusheet.app.model.PivotTableDefinition
 import com.masusheet.app.storage.AndroidKeystoreSecretStore
 import com.masusheet.app.storage.ContentResolverDocumentGatewayFactory
 import com.masusheet.app.storage.DocumentIoGateway
@@ -65,7 +66,14 @@ class MasuSheetViewModel(
         val sheetObjects: List<NativeSheetObject> = emptyList(),
         val selectedObjectId: String? = null,
         val selectedObjectIds: Set<String> = emptySet(),
-        val engineStepsCount: Int = 1
+        val pivotTables: List<PivotTableDefinition> = emptyList(),
+        val activePivotTableId: String? = null,
+        val isPivotFieldsPaneOpen: Boolean = false,
+        val dismissedPivotLauncherIds: Set<String> = emptySet(),
+        val engineStepsCount: Int = 1,
+        val xlsxBackupBytes: ByteArray? = null,
+        val backupWorkbookTitle: String = "",
+        val backupActiveSheetIndex: Int = 0
     )
 
     internal val customColWidths = mutableMapOf<Pair<Int, Int>, Float>()
@@ -125,6 +133,10 @@ class MasuSheetViewModel(
             sheetObjects = _uiState.value.sheetObjects.toList(),
             selectedObjectId = _uiState.value.selectedObjectId,
             selectedObjectIds = _uiState.value.effectiveSelectedObjectIds.toSet(),
+            pivotTables = _uiState.value.pivotTables.toList(),
+            activePivotTableId = _uiState.value.activePivotTableId,
+            isPivotFieldsPaneOpen = _uiState.value.isPivotFieldsPaneOpen,
+            dismissedPivotLauncherIds = _uiState.value.dismissedPivotLauncherIds.toSet(),
             engineStepsCount = engineStepsCount.coerceAtLeast(0)
         )
 
@@ -152,10 +164,25 @@ class MasuSheetViewModel(
         val validIds = snapshot.sheetObjects.map { it.id }.toSet()
         val validSelectedId = snapshot.selectedObjectId?.takeIf { it in validIds }
         val validSelectedIds = snapshot.selectedObjectIds.intersect(validIds)
+        val validPivotIds = snapshot.pivotTables.map { it.id }.toSet()
+        val restoredPivotId = snapshot.activePivotTableId?.takeIf { it in validPivotIds }
+        val restoredPivot = snapshot.pivotTables.firstOrNull { it.id == restoredPivotId }
         _uiState.value = cur.copy(
             sheetObjects = snapshot.sheetObjects,
             selectedObjectId = validSelectedId,
-            selectedObjectIds = validSelectedIds
+            selectedObjectIds = validSelectedIds,
+            pivotTables = snapshot.pivotTables,
+            activePivotTableId = restoredPivotId,
+            isPivotFieldsPaneOpen = snapshot.isPivotFieldsPaneOpen && snapshot.pivotTables.isNotEmpty(),
+            dismissedPivotLauncherIds = snapshot.dismissedPivotLauncherIds.intersect(validPivotIds),
+            pivotSubtotalsMode = restoredPivot?.subtotalsMode ?: cur.pivotSubtotalsMode,
+            pivotGrandTotalsMode = restoredPivot?.grandTotalsMode ?: cur.pivotGrandTotalsMode,
+            pivotReportLayout = restoredPivot?.reportLayout ?: cur.pivotReportLayout,
+            pivotRepeatLabels = restoredPivot?.repeatLabels ?: cur.pivotRepeatLabels,
+            pivotBlankRows = restoredPivot?.blankRows ?: cur.pivotBlankRows,
+            pivotBandedRows = restoredPivot?.bandedRows ?: cur.pivotBandedRows,
+            pivotBandedCols = restoredPivot?.bandedCols ?: cur.pivotBandedCols,
+            pivotStylePreset = restoredPivot?.stylePreset ?: cur.pivotStylePreset
         )
     }
 
@@ -218,9 +245,14 @@ class MasuSheetViewModel(
         val undoStackBefore: Int,
         val xlsxBackupBytes: ByteArray?,
         val workbookTitle: String,
-        val activeSheetIndex: Int
+        val activeSheetIndex: Int,
+        val undoStackSnapshotsBefore: List<CustomOverlayUndoSnapshot> = emptyList(),
+        val engineDepthAfter: Int = 0,
+        val createdObjectIds: List<String> = emptyList(),
+        val appliedStepsCount: Int = 0
     )
     internal val lastMacroPreRunSnapshots = mutableMapOf<String, MacroPreRunSnapshot>()
+    internal val lastAiPreRunSnapshots = mutableMapOf<String, MacroPreRunSnapshot>()
 
     internal fun hasMaterializedSalesDashboardCharts(sheetIndex: Int): Boolean {
         return "${_uiState.value.activeWorkbookId}:sales_dashboard:$sheetIndex" in materializedSampleChartSheetKeys
@@ -311,6 +343,17 @@ class MasuSheetViewModel(
                                 if (num != null && num.isFinite()) {
                                     val pct = if (existing.displayText.endsWith("%")) num else num * 100.0
                                     String.format(java.util.Locale.US, "%.1f%%", pct)
+                                } else existing.displayText
+                            }
+                            "number" -> {
+                                val num = existing.displayText.replace(",", "").replace("¥", "").replace("￥", "").trim().toDoubleOrNull()
+                                if (num != null && num.isFinite()) {
+                                    val rounded = Math.round(num)
+                                    if (kotlin.math.abs(num - rounded.toDouble()) < 1e-6) {
+                                        String.format(java.util.Locale.US, "%,d", rounded)
+                                    } else {
+                                        String.format(java.util.Locale.US, "%,.2f", num)
+                                    }
                                 } else existing.displayText
                             }
                             else -> existing.displayText
@@ -560,10 +603,19 @@ class MasuSheetViewModel(
                 activeSpillFormula = nextSpillFormula
             )
         )
-        engineGateway.executeCommand(
-            "selection.set",
-            "{\"active\":\"$activeAddr\",\"range\":\"$rangeAddr\"}"
-        )
+        val selJson = "{\"active\":\"$activeAddr\",\"range\":\"$rangeAddr\"}"
+        if (cur.isMacroRecording && (
+                anchorR != currentSnap.activeRow ||
+                    anchorC != currentSnap.activeCol ||
+                    r0 != currentSnap.selStartRow ||
+                    c0 != currentSnap.selStartCol ||
+                    r1 != currentSnap.selEndRow ||
+                    c1 != currentSnap.selEndCol
+                )
+        ) {
+            recordMacroStepIfNeeded("selection.set", selJson)
+        }
+        engineGateway.executeCommand("selection.set", selJson)
         if (pickingChartId != null) {
             handleChartRangeOrAxisPicking(pickingChartId, rangeAddr, cur.chartRangePickingMode)
         }
@@ -599,10 +651,11 @@ class MasuSheetViewModel(
                 activeDisplayText = activeCell?.displayText.orEmpty()
             )
         )
-        engineGateway.executeCommand(
-            "selection.set",
-            "{\"active\":\"$activeAddr\",\"range\":\"$rangeAddr\"}"
-        )
+        val selJson = "{\"active\":\"$activeAddr\",\"range\":\"$rangeAddr\"}"
+        if (cur.isMacroRecording) {
+            recordMacroStepIfNeeded("selection.set", selJson)
+        }
+        engineGateway.executeCommand("selection.set", selJson)
         if (pickingChartId != null) {
             handleChartRangeOrAxisPicking(pickingChartId, rangeAddr, cur.chartRangePickingMode)
         }
@@ -638,10 +691,11 @@ class MasuSheetViewModel(
                 activeDisplayText = activeCell?.displayText.orEmpty()
             )
         )
-        engineGateway.executeCommand(
-            "selection.set",
-            "{\"active\":\"$activeAddr\",\"range\":\"$rangeAddr\"}"
-        )
+        val selJson = "{\"active\":\"$activeAddr\",\"range\":\"$rangeAddr\"}"
+        if (cur.isMacroRecording) {
+            recordMacroStepIfNeeded("selection.set", selJson)
+        }
+        engineGateway.executeCommand("selection.set", selJson)
         if (pickingChartId != null) {
             handleChartRangeOrAxisPicking(pickingChartId, rangeAddr, cur.chartRangePickingMode)
         }

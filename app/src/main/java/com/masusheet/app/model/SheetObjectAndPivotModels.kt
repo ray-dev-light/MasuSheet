@@ -259,7 +259,7 @@ enum class PivotAggFunction(
 data class PivotValueFieldSpec(
     val fieldName: String,
     val agg: PivotAggFunction = PivotAggFunction.SUM,
-    val isCurrencyLike: Boolean = true
+    val isCurrencyLike: Boolean = isCurrencyFieldByName(fieldName)
 ) {
     val aggFunction: PivotAggFunction
         get() = agg
@@ -268,6 +268,39 @@ data class PivotValueFieldSpec(
         if (isEn) "${agg.labelEn} of $fieldName" else "${agg.labelJa} / $fieldName"
 
     fun displayHeader(isEn: Boolean): String = displayTitle(isEn)
+
+    companion object {
+        private val NON_CURRENCY_KEYWORDS = listOf(
+            "在庫数", "数量", "個数", "件数", "人数", "台数", "枚数", "本数", "回数", "日数",
+            "発注点", "安全在庫", "点数", "スコア", "順位", "ランク", "時間", "(h)", "工数",
+            "割合", "率", "構成比", "%",
+            "count", "qty", "quantity", "units", "rate", "ratio", "percent",
+            "hours", "days", "score", "rank", "points", "items", "stock", "reorder"
+        )
+        private val CURRENCY_KEYWORDS = listOf(
+            "金額", "単価", "価格", "売上", "予算", "実績額", "残高", "差額", "支給", "時給",
+            "人件費", "税込", "税抜", "小計", "消費税", "経費", "収支", "費用", "原価", "利益",
+            "円", "¥", "￥", "$", "price", "amount", "cost", "budget", "revenue", "sales", "salary", "tax"
+        )
+
+        fun isExplicitNonCurrencyField(fieldName: String): Boolean {
+            val f = fieldName.trim().lowercase()
+            if (f.isEmpty()) return false
+            return NON_CURRENCY_KEYWORDS.any { f.contains(it.lowercase()) }
+        }
+
+        fun isCurrencyFieldByName(fieldName: String): Boolean {
+            val f = fieldName.trim()
+            if (f.isEmpty() || isExplicitNonCurrencyField(f)) return false
+            val lower = f.lowercase()
+            return CURRENCY_KEYWORDS.any { lower.contains(it.lowercase()) }
+        }
+
+        fun resolveCurrencyLike(fieldName: String, detectedCurrencyFields: Set<String>): Boolean {
+            if (isExplicitNonCurrencyField(fieldName)) return false
+            return fieldName in detectedCurrencyFields || isCurrencyFieldByName(fieldName)
+        }
+    }
 }
 
 /**
@@ -288,6 +321,7 @@ data class PivotTableDefinition(
     val targetStartCol: Int,
     val availableFields: List<String>,
     val numericFields: Set<String>,
+    val currencyFields: Set<String> = emptySet(),
     val sourceRecords: List<Map<String, String>> = emptyList(),
     val filterFields: List<String> = emptyList(),
     val selectedFilterValues: Map<String, String> = emptyMap(),
@@ -305,18 +339,29 @@ data class PivotTableDefinition(
     val blankRows: Boolean = false,
     val lastRenderedStartRow: Int = targetStartRow,
     val lastRenderedEndRow: Int = targetStartRow,
+    val lastRenderedStartCol: Int = targetStartCol,
     val lastRenderedEndCol: Int = targetStartCol
 ) {
     val sourceRangeLabel: String
         get() = "$sourceSheetName!${MasuSheetConfig.formatCellAddress(sourceStartRow, sourceStartCol)}:${MasuSheetConfig.formatCellAddress(sourceEndRow, sourceEndCol)}"
 
     val targetRangeLabel: String
-        get() = "${MasuSheetConfig.formatCellAddress(lastRenderedStartRow, targetStartCol)}:${MasuSheetConfig.formatCellAddress(lastRenderedEndRow, lastRenderedEndCol)}"
+        get() {
+            val c0 = lastRenderedStartCol.coerceAtLeast(0)
+            val c1 = maxOf(c0, lastRenderedEndCol)
+            val r0 = lastRenderedStartRow.coerceAtLeast(0)
+            val r1 = maxOf(r0, lastRenderedEndRow)
+            return "${MasuSheetConfig.formatCellAddress(r0, c0)}:${MasuSheetConfig.formatCellAddress(r1, c1)}"
+        }
 
-    fun containsCell(sheetIdx: Int, row: Int, col: Int): Boolean =
-        sheetIdx == targetSheetIndex &&
-            row in minOf(targetStartRow, lastRenderedStartRow)..maxOf(targetStartRow, lastRenderedEndRow) &&
-            col in targetStartCol..maxOf(targetStartCol, lastRenderedEndCol)
+    fun containsCell(sheetIdx: Int, row: Int, col: Int): Boolean {
+        if (sheetIdx != targetSheetIndex) return false
+        if (lastRenderedEndRow < lastRenderedStartRow || lastRenderedEndCol < lastRenderedStartCol) {
+            return row == targetStartRow && col == targetStartCol
+        }
+        return row in minOf(targetStartRow, lastRenderedStartRow)..maxOf(targetStartRow, lastRenderedEndRow) &&
+            col in minOf(targetStartCol, lastRenderedStartCol)..maxOf(targetStartCol, lastRenderedEndCol)
+    }
 
     fun isFieldActive(fieldName: String): Boolean =
         fieldName in filterFields ||

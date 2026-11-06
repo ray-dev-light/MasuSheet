@@ -1356,9 +1356,9 @@ fun MasuSheetFullRibbon(
                                         SpreadsheetChartTypeCatalog.categories.forEach { cat ->
                                             add(
                                                 SpreadsheetDropdownActionItem(
-                                                    label = "${cat.icon} ${cat.titleJa} (${cat.titleEn})",
+                                                    label = if (isEn) "${cat.icon} ${cat.titleEn}" else "${cat.icon} ${cat.titleJa}",
                                                     subItems = cat.subtypes.map { sub ->
-                                                        "${sub.icon} ${sub.nameJa} (${sub.nameEn})" to {
+                                                        (if (isEn) "${sub.icon} ${sub.nameEn}" else "${sub.icon} ${sub.nameJa}") to {
                                                             onCommand("pivotAnalyze.pivotChart", "{\"type\":\"${sub.id}\"}")
                                                         }
                                                     }
@@ -1377,7 +1377,19 @@ fun MasuSheetFullRibbon(
                             SpreadsheetRibbonGroup(title = "レイアウト") {
                                 SpreadsheetTallRibbonButton("Σ", "Σ 小計を表示しない", highlight = state.pivotSubtotalsMode == "none", onClick = { onCommand("pivotDesign.subtotals", "{\"mode\":\"none\"}") })
                                 SpreadsheetTallRibbonButton("Σ", "Σ 小計をグループ下に表示", highlight = state.pivotSubtotalsMode == "bottom", onClick = { onCommand("pivotDesign.subtotals", "{\"mode\":\"bottom\"}") })
-                                SpreadsheetTallRibbonButton("Σ", "Σ 行と列の総計を表示", highlight = state.pivotGrandTotalsMode == "both", onClick = { onCommand("pivotDesign.grandTotals", "{\"mode\":\"both\"}") })
+                                SpreadsheetTallRibbonButton(
+                                    icon = "Σ",
+                                    label = "Σ 行と列の総計を表示",
+                                    hasDropdown = true,
+                                    menuItems = listOf(
+                                        SpreadsheetDropdownActionItem(if (isEn) "Σ Off for Rows and Columns" else "Σ 行と列の集計を行わない") { onCommand("pivotDesign.grandTotals", "{\"mode\":\"none\"}") },
+                                        SpreadsheetDropdownActionItem(if (isEn) "Σ On for Rows and Columns" else "Σ 行と列の集計を行う") { onCommand("pivotDesign.grandTotals", "{\"mode\":\"both\"}") },
+                                        SpreadsheetDropdownActionItem(if (isEn) "Σ On for Rows Only" else "Σ 行の集計のみ行う") { onCommand("pivotDesign.grandTotals", "{\"mode\":\"rows\"}") },
+                                        SpreadsheetDropdownActionItem(if (isEn) "Σ On for Columns Only" else "Σ 列の集計のみ行う") { onCommand("pivotDesign.grandTotals", "{\"mode\":\"columns\"}") }
+                                    ),
+                                    highlight = state.pivotGrandTotalsMode != "none",
+                                    onClick = { onCommand("pivotDesign.grandTotals", "{}") }
+                                )
                                 SpreadsheetTallRibbonButton("📐", "📐 コンパクト形式", highlight = state.pivotReportLayout == "compact", onClick = { onCommand("pivotDesign.reportLayout", "{\"layout\":\"compact\"}") })
                                 SpreadsheetTallRibbonButton("📐", "📐 アウトライン形式", highlight = state.pivotReportLayout == "outline", onClick = { onCommand("pivotDesign.reportLayout", "{\"layout\":\"outline\"}") })
                                 SpreadsheetTallRibbonButton("📐", "📐 表形式で表示", highlight = state.pivotReportLayout == "tabular", onClick = { onCommand("pivotDesign.reportLayout", "{\"layout\":\"tabular\"}") })

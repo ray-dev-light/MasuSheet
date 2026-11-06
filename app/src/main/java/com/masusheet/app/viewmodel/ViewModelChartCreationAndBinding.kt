@@ -263,10 +263,24 @@ internal fun MasuSheetViewModel.extractChartDataWithColumns(vp: NativeViewportSn
         }
     }
 
-    val validDataRows = (dataStartR..r1).filter { r ->
+    val isEn = _uiState.value.language == "en"
+    val rawCandidateRows = (dataStartR..r1).filter { r ->
         val firstColTxt = vp.cellAt(r, c0)?.displayText?.trim().orEmpty()
-        firstColTxt !in setOf("合計", "総計", "小計", "平均", "Total", "Grand Total", "Subtotal", "Average") &&
+        !isSummaryFooterRowLabel(firstColTxt) &&
+            !firstColTxt.endsWith(" 集計") &&
+            !firstColTxt.endsWith(" Total", ignoreCase = true) &&
+            !firstColTxt.startsWith("🔎 ") &&
             numericCols.any { c -> parseNumericCell(vp.cellAt(r, c)) != null }
+    }
+    val hasIndentedPivotChildren = rawCandidateRows.any { r ->
+        vp.cellAt(r, c0)?.displayText?.startsWith("   ") == true
+    }
+    val validDataRows = if (hasIndentedPivotChildren) {
+        rawCandidateRows.filterNot { r ->
+            vp.cellAt(r, c0)?.displayText?.trim()?.startsWith("▾ ") == true
+        }
+    } else {
+        rawCandidateRows
     }
 
     if (validDataRows.isNotEmpty() && numericCols.isNotEmpty()) {
@@ -278,7 +292,7 @@ internal fun MasuSheetViewModel.extractChartDataWithColumns(vp: NativeViewportSn
                 vp.cellAt(singleR, textLabelColInSelection)?.displayText?.trim().orEmpty()
             } else {
                 ""
-            }.ifEmpty { "行${singleR + 1}" }
+            }.ifEmpty { if (isEn) "Row ${singleR + 1}" else "行${singleR + 1}" }
             val nameRef = if (textLabelColInSelection != null) {
                 MasuSheetConfig.formatCellAddress(singleR, textLabelColInSelection)
             } else {
@@ -318,6 +332,13 @@ internal fun MasuSheetViewModel.extractChartDataWithColumns(vp: NativeViewportSn
         val useFirstNumericColAsX = textLabelColInSelection == null && numericCols.size >= 2
         val effectiveXCol: Int? = if (useFirstNumericColAsX) numericCols.first() else textLabelColInSelection
         val effectiveYCols: List<Int> = if (useFirstNumericColAsX) numericCols.drop(1) else numericCols
+        val secondaryTextCols = if (effectiveXCol != null && !useFirstNumericColAsX) {
+            ((effectiveXCol + 1)..c1).filter { c ->
+                c !in numericCols && validDataRows.any { r -> !vp.cellAt(r, c)?.displayText.isNullOrBlank() }
+            }
+        } else {
+            emptyList()
+        }
 
         val rFirst = validDataRows.first()
         val rLast = validDataRows.last()
@@ -327,21 +348,34 @@ internal fun MasuSheetViewModel.extractChartDataWithColumns(vp: NativeViewportSn
             ""
         }
 
+        var lastOuterGroup = ""
         val categories = validDataRows.map { r ->
-            val rawLbl = if (effectiveXCol != null) {
-                vp.cellAt(r, effectiveXCol)?.displayText?.trim().orEmpty()
+            val primaryRaw = if (effectiveXCol != null) {
+                vp.cellAt(r, effectiveXCol)?.displayText?.trim()?.removePrefix("▾ ")?.removePrefix("▸ ")?.trim().orEmpty()
             } else {
                 ""
             }
-            rawLbl.ifEmpty { "行${r + 1}" }
+            if (primaryRaw.isNotEmpty()) {
+                lastOuterGroup = primaryRaw
+            }
+            val subParts = secondaryTextCols.mapNotNull { sc ->
+                vp.cellAt(r, sc)?.displayText?.trim()?.removePrefix("▾ ")?.removePrefix("▸ ")?.trim()?.takeIf { it.isNotEmpty() }
+            }
+            val combined = when {
+                subParts.isNotEmpty() && lastOuterGroup.isNotEmpty() -> "$lastOuterGroup / ${subParts.joinToString(" / ")}"
+                subParts.isNotEmpty() -> subParts.joinToString(" / ")
+                else -> primaryRaw
+            }
+            combined.ifEmpty { if (isEn) "Row ${r + 1}" else "行${r + 1}" }
         }
 
         val seriesList = effectiveYCols.map { c ->
+            val colLet = MasuSheetConfig.formatColumnLabel(c)
             val sName = if (headerRowIdx != null) {
                 vp.cellAt(headerRowIdx, c)?.displayText?.trim().orEmpty()
             } else {
                 ""
-            }.ifEmpty { "${MasuSheetConfig.formatColumnLabel(c)}列" }
+            }.ifEmpty { if (isEn) "Col $colLet" else "${colLet}列" }
             val nameRef = if (headerRowIdx != null) MasuSheetConfig.formatCellAddress(headerRowIdx, c) else ""
             val yAddr = "${MasuSheetConfig.formatCellAddress(rFirst, c)}:${MasuSheetConfig.formatCellAddress(rLast, c)}"
             val sValues = validDataRows.map { r ->
@@ -367,8 +401,8 @@ internal fun MasuSheetViewModel.extractChartDataWithColumns(vp: NativeViewportSn
     }
 
     // Fallback if sheet has no numbers at all
-    val fallbackCats = listOf("項目1", "項目2", "項目3", "項目4")
-    val fallbackSeries = listOf(ChartSeries("系列1", listOf(0f, 0f, 0f, 0f), xLabels = fallbackCats))
+    val fallbackCats = if (isEn) listOf("Item 1", "Item 2", "Item 3", "Item 4") else listOf("項目1", "項目2", "項目3", "項目4")
+    val fallbackSeries = listOf(ChartSeries(if (isEn) "Series 1" else "系列1", listOf(0f, 0f, 0f, 0f), xLabels = fallbackCats))
     return ExtractedChartTableData(fallbackCats, fallbackSeries, rangeAddr)
 }
 

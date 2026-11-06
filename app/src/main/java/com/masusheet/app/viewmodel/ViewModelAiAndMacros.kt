@@ -515,14 +515,26 @@ fun MasuSheetViewModel.onSendAiPrompt(prompt: String) {
         }
     }
 
-    val apiKey = preferencesRepository.getAiApiKey(cur.selectedAiModelId)
-    val customEndpoint = preferencesRepository.getAiCustomEndpoint()
-    val customModelName = preferencesRepository.getAiCustomModel(cur.selectedAiModelId)
     val isEn = cur.language == "en"
-    val effectiveModelId = if (cur.selectedAiModelId == "auto") {
+    val (resolvedProviderForAuto, apiKey) = if (cur.selectedAiModelId == "auto") {
+        val autoKey = preferencesRepository.getAiApiKey("auto")
+        if (autoKey.isNotBlank()) {
+            "auto" to autoKey
+        } else {
+            listOf("gemini", "claude", "gpt")
+                .map { id -> id to preferencesRepository.getAiApiKey(id) }
+                .firstOrNull { it.second.isNotBlank() }
+                ?: ("auto" to "")
+        }
+    } else {
+        cur.selectedAiModelId to preferencesRepository.getAiApiKey(cur.selectedAiModelId)
+    }
+    val customEndpoint = preferencesRepository.getAiCustomEndpoint()
+    val customModelName = preferencesRepository.getAiCustomModel(resolvedProviderForAuto)
+    val effectiveModelId = if (resolvedProviderForAuto == "auto") {
         if (apiKey.isNotBlank()) "gemini" else "auto"
     } else {
-        cur.selectedAiModelId
+        resolvedProviderForAuto
     }
     val usesLiveNetwork = cur.selectedAiEditMode != "plan" &&
         effectiveModelId != "auto" &&
@@ -559,7 +571,7 @@ fun MasuSheetViewModel.onSendAiPrompt(prompt: String) {
                 editMode = cur.selectedAiEditMode,
                 clarifyingAnswers = emptyMap(),
                 vp = cur.viewport,
-                modelId = cur.selectedAiModelId,
+                modelId = resolvedProviderForAuto,
                 apiKey = apiKey,
                 customEndpoint = customEndpoint,
                 customModelName = customModelName,
@@ -579,7 +591,7 @@ fun MasuSheetViewModel.onSendAiPrompt(prompt: String) {
             editMode = cur.selectedAiEditMode,
             clarifyingAnswers = emptyMap(),
             vp = cur.viewport,
-            modelId = cur.selectedAiModelId,
+            modelId = resolvedProviderForAuto,
             apiKey = apiKey,
             customEndpoint = customEndpoint,
             customModelName = customModelName,
@@ -641,14 +653,26 @@ fun MasuSheetViewModel.onExecuteConfirmedAiPlan() {
         return
     }
     val answersMap = session.questions.associate { q -> q.title to q.resolvedAnswer() }
-    val apiKey = preferencesRepository.getAiApiKey(cur.selectedAiModelId)
-    val customEndpoint = preferencesRepository.getAiCustomEndpoint()
-    val customModelName = preferencesRepository.getAiCustomModel(cur.selectedAiModelId)
     val isEn = cur.language == "en"
-    val effectiveModelId = if (cur.selectedAiModelId == "auto") {
+    val (resolvedProviderForAuto, apiKey) = if (cur.selectedAiModelId == "auto") {
+        val autoKey = preferencesRepository.getAiApiKey("auto")
+        if (autoKey.isNotBlank()) {
+            "auto" to autoKey
+        } else {
+            listOf("gemini", "claude", "gpt")
+                .map { id -> id to preferencesRepository.getAiApiKey(id) }
+                .firstOrNull { it.second.isNotBlank() }
+                ?: ("auto" to "")
+        }
+    } else {
+        cur.selectedAiModelId to preferencesRepository.getAiApiKey(cur.selectedAiModelId)
+    }
+    val customEndpoint = preferencesRepository.getAiCustomEndpoint()
+    val customModelName = preferencesRepository.getAiCustomModel(resolvedProviderForAuto)
+    val effectiveModelId = if (resolvedProviderForAuto == "auto") {
         if (apiKey.isNotBlank()) "gemini" else "auto"
     } else {
-        cur.selectedAiModelId
+        resolvedProviderForAuto
     }
     val usesLiveNetwork = effectiveModelId != "auto" && (apiKey.isNotBlank() || effectiveModelId == "local")
     _uiState.value = cur.copy(activeAiPlanSession = null, isLoading = usesLiveNetwork)
@@ -660,7 +684,7 @@ fun MasuSheetViewModel.onExecuteConfirmedAiPlan() {
                 editMode = "allow_edit",
                 clarifyingAnswers = answersMap,
                 vp = cur.viewport,
-                modelId = cur.selectedAiModelId,
+                modelId = resolvedProviderForAuto,
                 apiKey = apiKey,
                 customEndpoint = customEndpoint,
                 customModelName = customModelName,
@@ -679,7 +703,7 @@ fun MasuSheetViewModel.onExecuteConfirmedAiPlan() {
             editMode = "allow_edit",
             clarifyingAnswers = answersMap,
             vp = cur.viewport,
-            modelId = cur.selectedAiModelId,
+            modelId = resolvedProviderForAuto,
             apiKey = apiKey,
             customEndpoint = customEndpoint,
             customModelName = customModelName,
@@ -725,8 +749,19 @@ fun MasuSheetViewModel.onImportWebAiJsonResponse(rawText: String): Boolean {
  * [JA] AI応答の検証済みコマンドとグラフ挿入を実行し、1クリックで元に戻せるようUndoステップ数を記録してチャット履歴を更新します。
  */
 internal fun MasuSheetViewModel.applyAiExecutionResult(result: AiTurnExecutionResult) {
-    val undoStackBefore = customOverlayUndoStack.size
-    val engineDepthBefore = _uiState.value.viewport.undoDepth
+    val curBefore = _uiState.value
+    val activeWbId = curBefore.activeWorkbookId
+    val preAiOverlay = captureCustomOverlaySnapshot(engineStepsCount = 0)
+    val undoStackCopyBefore = customOverlayUndoStack.toList()
+    val engineDepthBefore = curBefore.viewport.undoDepth
+    val backupBytes = if (result.commands.isNotEmpty()) {
+        runCatching {
+            engineGateway.saveWorkbookBytes(MasuSheetConfig.sanitizeWorkbookFileName(curBefore.workbookTitle, "xlsx"))
+        }.getOrNull()
+    } else {
+        null
+    }
+
     var appliedCmdCount = 0
     val pendingChartPayloads = mutableListOf<String>()
     for ((cmdId, paramsJson) in result.commands) {
@@ -756,10 +791,38 @@ internal fun MasuSheetViewModel.applyAiExecutionResult(result: AiTurnExecutionRe
         )
         createdObjIds.add(chartId)
     }
-    val overlayStepsAdded = (customOverlayUndoStack.size - undoStackBefore).coerceAtLeast(0)
+
     val engineStepsAdded = (_uiState.value.viewport.undoDepth - engineDepthBefore).coerceAtLeast(0)
-    val recordedUndoSteps = if (overlayStepsAdded > 0) overlayStepsAdded else engineStepsAdded
     val totalApplied = appliedCmdCount + createdObjIds.size
+    val recordedUndoSteps = if (totalApplied > 0) maxOf(totalApplied, engineStepsAdded) else 0
+    if (totalApplied > 0) {
+        // Collapse the entire AI turn (even 100+ commands + charts) into a single atomic Undo snapshot
+        // so both AI Undo and toolbar Ctrl+Z / Undo revert 100% of the AI turn in 1 click without evicting earlier Undo history!
+        val needsByteSnapshotRestore = backupBytes != null &&
+            (appliedCmdCount > 50 || _uiState.value.viewport.undoDepth >= 95)
+        customOverlayUndoStack.clear()
+        customOverlayUndoStack.addAll(undoStackCopyBefore)
+        pushCustomOverlayUndoSnapshot(
+            preAiOverlay.copy(
+                engineStepsCount = engineStepsAdded,
+                xlsxBackupBytes = if (needsByteSnapshotRestore) backupBytes else null,
+                backupWorkbookTitle = curBefore.workbookTitle,
+                backupActiveSheetIndex = curBefore.viewport.sheetIndex
+            )
+        )
+        lastAiPreRunSnapshots[activeWbId] = MasuSheetViewModel.MacroPreRunSnapshot(
+            overlay = preAiOverlay,
+            engineDepthBefore = engineDepthBefore,
+            undoStackBefore = undoStackCopyBefore.size,
+            xlsxBackupBytes = backupBytes,
+            workbookTitle = curBefore.workbookTitle,
+            activeSheetIndex = curBefore.viewport.sheetIndex,
+            undoStackSnapshotsBefore = undoStackCopyBefore,
+            engineDepthAfter = _uiState.value.viewport.undoDepth,
+            createdObjectIds = createdObjIds,
+            appliedStepsCount = recordedUndoSteps
+        )
+    }
     val formattedScript = SpreadsheetAiAgent.formatTurnResultAsScriptJson(result)
     val assistantMsg = AiChatMessage(
         id = "a_${System.currentTimeMillis()}",
@@ -767,13 +830,20 @@ internal fun MasuSheetViewModel.applyAiExecutionResult(result: AiTurnExecutionRe
         text = result.replyText,
         summaryBullets = result.summaryBullets,
         appliedEditCount = totalApplied,
-        canUndo = recordedUndoSteps > 0 || createdObjIds.isNotEmpty(),
+        canUndo = totalApplied > 0,
         scriptJson = formattedScript
     )
     val cur = _uiState.value
     val isEn = cur.language == "en"
+    val decoratedVp = decorateWithCustomSizes(cur.viewport)
+    val clearedPriorMsgs = if (totalApplied > 0) {
+        cur.aiMessages.map { if (it.canUndo) it.copy(canUndo = false) else it }
+    } else {
+        cur.aiMessages
+    }
     _uiState.value = cur.copy(
-        aiMessages = cur.aiMessages + assistantMsg,
+        viewport = decoratedVp,
+        aiMessages = clearedPriorMsgs + assistantMsg,
         lastAiUndoSteps = recordedUndoSteps,
         lastAiCreatedObjectIds = createdObjIds,
         statusNoticeMessage = if (totalApplied > 0) {
@@ -785,18 +855,65 @@ internal fun MasuSheetViewModel.applyAiExecutionResult(result: AiTurnExecutionRe
 }
 
 /**
- * [EN] Reverts all spreadsheet mutations and removes any charts created by the most recent AI assistant turn.
- * [JA] 直前のAI実行によって行われたセル編集および挿入グラフをすべて元に戻します。
+ * [EN] Reverts all spreadsheet mutations and removes any charts created by the most recent AI assistant turn on the active workbook.
+ * [JA] 現在のブックに対して直前のAI実行で行われたすべてのセル編集・書式・挿入グラフを一括で元に戻します。
  */
 fun MasuSheetViewModel.onUndoLastAiEdit() {
     val cur = _uiState.value
-    val steps = cur.lastAiUndoSteps.coerceIn(0, 500)
-    val removedCharts = cur.lastAiCreatedObjectIds
-    if (steps <= 0 && removedCharts.isEmpty()) return
-    repeat(steps) {
-        dispatchCommand("edit.undo", "{}")
-    }
+    val activeWbId = cur.activeWorkbookId
+    val savedPreRun = lastAiPreRunSnapshots.remove(activeWbId)
+    if (savedPreRun == null && cur.lastAiUndoSteps <= 0 && cur.lastAiCreatedObjectIds.isEmpty()) return
     val isEn = cur.language == "en"
+
+    if (savedPreRun == null) {
+        // Active workbook has no pending AI snapshot (e.g. user switched workbooks) — do not mutate this workbook!
+        _uiState.value = cur.copy(
+            statusNoticeMessage = if (isEn) "No AI edits to undo on this workbook" else "このブックで元に戻せるAI編集はありません"
+        )
+        return
+    }
+    val steps = maxOf(
+        cur.lastAiUndoSteps,
+        savedPreRun.appliedStepsCount,
+        savedPreRun.engineDepthAfter - savedPreRun.engineDepthBefore
+    ).coerceIn(1, 5000)
+    val removedCharts = savedPreRun.createdObjectIds.ifEmpty { cur.lastAiCreatedObjectIds }
+
+    val alreadyUndoneViaToolbar = cur.viewport.undoDepth <= savedPreRun.engineDepthBefore &&
+        customOverlayUndoStack.size <= savedPreRun.undoStackBefore
+
+    if (!alreadyUndoneViaToolbar) {
+        val engineDeltaFromPre = (cur.viewport.undoDepth - savedPreRun.engineDepthBefore).coerceIn(0, 5000)
+        val topSnap = customOverlayUndoStack.lastOrNull()
+        val topIsGroupedAiStep = cur.viewport.undoDepth == savedPreRun.engineDepthAfter &&
+            topSnap?.engineStepsCount == (savedPreRun.engineDepthAfter - savedPreRun.engineDepthBefore) &&
+            (topSnap.xlsxBackupBytes != null || (steps <= 50 && savedPreRun.engineDepthAfter < 95))
+
+        if (topIsGroupedAiStep) {
+            dispatchCommand("edit.undo", "{}")
+        } else {
+            val latestSnap = if ((steps > 50 || engineDeltaFromPre > 50 || savedPreRun.engineDepthAfter >= 95) && savedPreRun.xlsxBackupBytes != null) {
+                engineGateway.openWorkbookBytes(savedPreRun.workbookTitle, savedPreRun.xlsxBackupBytes)
+                engineGateway.executeCommand("sheet.activate", "{\"sheet\":${savedPreRun.activeSheetIndex}}")
+            } else {
+                var snap = _uiState.value.viewport
+                repeat(engineDeltaFromPre) {
+                    snap = engineGateway.executeCommand("edit.undo", "{}")
+                }
+                snap
+            }
+            customOverlayUndoStack.clear()
+            customOverlayUndoStack.addAll(savedPreRun.undoStackSnapshotsBefore)
+            customOverlayRedoStack.clear()
+            restoreCustomOverlaySnapshot(savedPreRun.overlay)
+            val decorated = decorateWithCustomSizes(latestSnap)
+            _uiState.value = _uiState.value.copy(
+                viewport = decorated,
+                isDirty = decorated.isDirty
+            )
+        }
+    }
+
     val undoMsg = AiChatMessage(
         id = "a_undo_${System.currentTimeMillis()}",
         role = "assistant",
@@ -812,13 +929,15 @@ fun MasuSheetViewModel.onUndoLastAiEdit() {
     } else {
         nextState.sheetObjects
     }
+    val clearedMsgs = nextState.aiMessages.map { if (it.canUndo) it.copy(canUndo = false) else it }
     _uiState.value = nextState.copy(
         sheetObjects = filteredObjects,
         selectedObjectId = if (nextState.selectedObjectId in removedCharts) null else nextState.selectedObjectId,
         selectedObjectIds = nextState.selectedObjectIds - removedCharts.toSet(),
         lastAiUndoSteps = 0,
         lastAiCreatedObjectIds = emptyList(),
-        aiMessages = nextState.aiMessages + undoMsg,
+        aiMessages = clearedMsgs + undoMsg,
         statusNoticeMessage = if (isEn) "Reverted AI edit ($steps steps)" else "AI編集を元に戻しました ($steps ステップ)"
     )
+    saveCurrentWorkbookToSessionList()
 }

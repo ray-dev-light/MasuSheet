@@ -1101,16 +1101,33 @@ fun MasuSheetViewModel.onInsertOrUpdateChartFromPicker(chartType: String, insert
             customTitle = null
         )
     } else {
-        val bounds = detectTableBoundsAt(vp, vp.activeRow, vp.activeCol)
+        val activePivot = getActivePivotTable()?.takeIf {
+            it.targetSheetIndex == sIdx && it.lastRenderedEndRow >= it.lastRenderedStartRow
+        }
         val spec = SpreadsheetChartTypeCatalog.findSpec(chartType)
-        onInsertChartFromRange(
-            chartType = spec.subType,
-            startRow = bounds[0],
-            startCol = bounds[3],
-            endRow = bounds[2],
-            endCol = bounds[4],
-            customTitle = null
-        )
+        if (activePivot != null && activePivot.containsCell(sIdx, vp.activeRow, vp.activeCol)) {
+            val filterOffset = if (activePivot.filterFields.isNotEmpty()) activePivot.filterFields.size + 1 else 0
+            val hdrRow = (activePivot.lastRenderedStartRow + filterOffset).coerceAtMost(activePivot.lastRenderedEndRow)
+            val typeLabel = if (cur.language == "en") spec.labelEn else spec.labelJa
+            onInsertChartFromRange(
+                chartType = spec.subType,
+                startRow = hdrRow,
+                startCol = activePivot.lastRenderedStartCol,
+                endRow = activePivot.lastRenderedEndRow,
+                endCol = activePivot.lastRenderedEndCol,
+                customTitle = if (cur.language == "en") "PivotChart ($typeLabel - ${vp.sheetName})" else "ピボットグラフ ($typeLabel - ${vp.sheetName})"
+            )
+        } else {
+            val bounds = detectTableBoundsAt(vp, vp.activeRow, vp.activeCol)
+            onInsertChartFromRange(
+                chartType = spec.subType,
+                startRow = bounds[0],
+                startCol = bounds[3],
+                endRow = bounds[2],
+                endCol = bounds[4],
+                customTitle = null
+            )
+        }
     }
     _uiState.value = _uiState.value.copy(isPivotChartPickerOpen = false)
     return id

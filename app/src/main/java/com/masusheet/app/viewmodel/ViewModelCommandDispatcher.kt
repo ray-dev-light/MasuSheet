@@ -51,6 +51,23 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
         if (customOverlayUndoStack.isNotEmpty()) {
             val targetSnap = customOverlayUndoStack.removeLast()
             val stepsToUndo = targetSnap.engineStepsCount
+            if (targetSnap.xlsxBackupBytes != null) {
+                val redoBytes = runCatching {
+                    engineGateway.saveWorkbookBytes(MasuSheetConfig.sanitizeWorkbookFileName(cur.workbookTitle, "xlsx"))
+                }.getOrNull()
+                customOverlayRedoStack.addLast(
+                    captureCustomOverlaySnapshot(engineStepsCount = stepsToUndo).copy(
+                        xlsxBackupBytes = redoBytes,
+                        backupWorkbookTitle = cur.workbookTitle,
+                        backupActiveSheetIndex = cur.viewport.sheetIndex
+                    )
+                )
+                restoreCustomOverlaySnapshot(targetSnap)
+                engineGateway.openWorkbookBytes(targetSnap.backupWorkbookTitle.ifBlank { cur.workbookTitle }, targetSnap.xlsxBackupBytes)
+                val snap = engineGateway.executeCommand("sheet.activate", "{\"sheet\":${targetSnap.backupActiveSheetIndex}}")
+                applyViewportSnapshot(snap)
+                return
+            }
             customOverlayRedoStack.addLast(captureCustomOverlaySnapshot(engineStepsCount = stepsToUndo))
             restoreCustomOverlaySnapshot(targetSnap)
             if (stepsToUndo == 0) {
@@ -74,6 +91,23 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
         if (customOverlayRedoStack.isNotEmpty()) {
             val targetSnap = customOverlayRedoStack.removeLast()
             val stepsToRedo = targetSnap.engineStepsCount
+            if (targetSnap.xlsxBackupBytes != null) {
+                val undoBytes = runCatching {
+                    engineGateway.saveWorkbookBytes(MasuSheetConfig.sanitizeWorkbookFileName(cur.workbookTitle, "xlsx"))
+                }.getOrNull()
+                customOverlayUndoStack.addLast(
+                    captureCustomOverlaySnapshot(engineStepsCount = stepsToRedo).copy(
+                        xlsxBackupBytes = undoBytes,
+                        backupWorkbookTitle = cur.workbookTitle,
+                        backupActiveSheetIndex = cur.viewport.sheetIndex
+                    )
+                )
+                restoreCustomOverlaySnapshot(targetSnap)
+                engineGateway.openWorkbookBytes(targetSnap.backupWorkbookTitle.ifBlank { cur.workbookTitle }, targetSnap.xlsxBackupBytes)
+                val snap = engineGateway.executeCommand("sheet.activate", "{\"sheet\":${targetSnap.backupActiveSheetIndex}}")
+                applyViewportSnapshot(snap)
+                return
+            }
             customOverlayUndoStack.addLast(captureCustomOverlaySnapshot(engineStepsCount = stepsToRedo))
             restoreCustomOverlaySnapshot(targetSnap)
             if (stepsToRedo == 0) {
@@ -246,26 +280,40 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
             if (pObj.has("range")) {
                 engineGateway.executeCommand("selection.set", "{\"active\":\"${MasuSheetConfig.formatCellAddress(tr0, tc0)}\",\"range\":\"$targetRangeAddr\"}")
             }
-            val fmt = pObj.optString("format", "").trim()
+            val fmt = pObj.optString("format", pObj.optString("code", "")).trim()
+            effectiveCmd = "home.numberFormat"
             when {
                 fmt.contains("%") -> {
-                    effectiveCmd = "home.percent"
-                    effectiveParams = "{}"
+                    effectiveParams = JSONObject()
+                        .put("range", targetRangeAddr)
+                        .put("code", fmt.ifBlank { "0.0%" })
+                        .toString()
                     updateCustomCellStylesInRange(tr0, tc0, tr1, tc1) { _, _, st -> st.copy(numberFormatKind = "percent") }
                 }
                 fmt.contains("¥") || fmt.contains("￥") || fmt.contains("$") -> {
-                    effectiveCmd = "home.currency"
-                    effectiveParams = "{}"
-                    updateCustomCellStylesInRange(tr0, tc0, tr1, tc1) { _, _, st -> st.copy(numberFormatKind = "currency") }
+                    effectiveParams = JSONObject()
+                        .put("range", targetRangeAddr)
+                        .put("code", fmt.ifBlank { "¥#,##0" })
+                        .toString()
+                    val overlayKind = if (fmt.contains("$") && !fmt.contains("¥") && !fmt.contains("￥")) "" else "currency"
+                    updateCustomCellStylesInRange(tr0, tc0, tr1, tc1) { _, _, st -> st.copy(numberFormatKind = overlayKind) }
                 }
                 fmt.contains(",") || fmt.contains("#,##0") -> {
-                    effectiveCmd = "home.comma"
-                    effectiveParams = "{}"
-                    updateCustomCellStylesInRange(tr0, tc0, tr1, tc1) { _, _, st -> st.copy(numberFormatKind = "") }
+                    effectiveParams = JSONObject()
+                        .put("range", targetRangeAddr)
+                        .put("code", fmt.ifBlank { "#,##0" })
+                        .toString()
+                    val overlayKind = if (fmt.contains('.')) "" else "number"
+                    updateCustomCellStylesInRange(tr0, tc0, tr1, tc1) { _, _, st -> st.copy(numberFormatKind = overlayKind) }
                 }
                 else -> {
-                    effectiveCmd = "home.numberFormat"
-                    effectiveParams = JSONObject().put("format", fmt.ifBlank { "General" }).toString()
+                    effectiveParams = JSONObject()
+                        .put("range", targetRangeAddr)
+                        .put("format", fmt.ifBlank { "General" })
+                        .toString()
+                    if (fmt.equals("General", ignoreCase = true) || fmt.isBlank()) {
+                        updateCustomCellStylesInRange(tr0, tc0, tr1, tc1) { _, _, st -> st.copy(numberFormatKind = "") }
+                    }
                 }
             }
         }
@@ -483,7 +531,9 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
                 }
             }
         }
-        "home.clearFormats" -> {
+        "home.clearFormats", "edit.clearFormats" -> {
+            effectiveCmd = "edit.clearFormats"
+            effectiveParams = JSONObject().put("range", targetRangeAddr).toString()
             updateCustomCellStylesInRange(tr0, tc0, tr1, tc1) { _, _, _ ->
                 CustomCellStyleOverride(
                     bgColor = CustomCellStyleOverride.CLEARED,
@@ -503,7 +553,8 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
             }
         }
         "home.clearAll", "edit.clearAll" -> {
-            effectiveCmd = "home.clearAll"
+            effectiveCmd = "edit.clearAll"
+            effectiveParams = JSONObject().put("range", targetRangeAddr).toString()
             if (pObj.has("range")) {
                 engineGateway.executeCommand("selection.set", "{\"active\":\"${MasuSheetConfig.formatCellAddress(tr0, tc0)}\",\"range\":\"$targetRangeAddr\"}")
             }
@@ -519,6 +570,51 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
             val mode = pObj.optString("mode", pObj.optString("kind", "values")).lowercase()
             val transpose = pObj.optBoolean("transpose", mode == "transpose")
             onPasteSpecial(mode = mode, transpose = transpose)
+            return
+        }
+        "home.columnWidth", "format.columnWidth" -> {
+            effectiveCmd = "home.columnWidth"
+            var colStart = tc0
+            var colEnd = tc1
+            val colsParam = pObj.optString("cols", "").substringAfterLast('!').trim()
+            if (colsParam.isNotEmpty()) {
+                val cParts = colsParam.split(':', limit = 2)
+                val c0Parsed = parseSingleCellRef("${cParts[0].trim()}1")?.second
+                val c1Parsed = parseSingleCellRef("${cParts.last().trim()}1")?.second
+                if (c0Parsed != null && c1Parsed != null) {
+                    colStart = minOf(c0Parsed, c1Parsed)
+                    colEnd = maxOf(c0Parsed, c1Parsed)
+                }
+            } else if (pObj.has("range")) {
+                engineGateway.executeCommand(
+                    "selection.set",
+                    "{\"active\":\"${MasuSheetConfig.formatCellAddress(tr0, tc0)}\",\"range\":\"$targetRangeAddr\"}"
+                )
+            }
+            val rawW = pObj.optDouble("width", 84.0).toFloat()
+            val clampedW = rawW.coerceIn(24f, 600f)
+            val sIdx = cur.viewport.sheetIndex
+            for (c in colStart..colEnd.coerceAtMost(colStart + 51)) {
+                if (c in cur.viewport.colWidths.indices) {
+                    customColWidths[sIdx to c] = clampedW
+                }
+            }
+            sizeRevisionBump++
+            val colsSpan = "${MasuSheetConfig.formatColumnLabel(colStart)}:${MasuSheetConfig.formatColumnLabel(colEnd)}"
+            effectiveParams = JSONObject()
+                .put("cols", colsSpan)
+                .put("width", clampedW.toInt())
+                .toString()
+        }
+        "home.autofitColumnWidth", "home.autoFitColumnWidth", "format.autofitColumnWidth", "format.autoFitColumnWidth" -> {
+            for (c in tc0..tc1.coerceAtMost(tc0 + 25)) {
+                onAutoFitColumn(c)
+            }
+            val currentOverlayAfter = captureCustomOverlaySnapshot()
+            if (currentOverlayAfter != preCommandOverlaySnapshot) {
+                pushCustomOverlayUndoSnapshot(preCommandOverlaySnapshot.copy(engineStepsCount = 0))
+            }
+            recordMacroStepIfNeeded("home.autofitColumnWidth", paramsJson)
             return
         }
         "view.gridlines" -> {
@@ -665,11 +761,12 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
             _uiState.value = cur.copy(showChangesActive = !cur.showChangesActive)
         }
         "home.conditionalFormatting", "format.conditional", "home.clearConditionalFormatting", "home.conditionalFormat", "home.clearRules" -> {
-            pushCustomOverlayUndoSnapshot(preCommandOverlaySnapshot)
             val rawRule = if (commandId == "home.clearConditionalFormatting" || commandId == "home.clearRules") {
                 "clear"
             } else {
-                pObj.optString("type", pObj.optString("rule", "dataBar"))
+                val rObj = pObj.optJSONObject("rule")
+                rObj?.optString("type", "")?.takeIf { it.isNotEmpty() }
+                    ?: pObj.optString("type", pObj.optString("rule", "dataBar"))
             }
             val cfType = when {
                 rawRule.contains("color", ignoreCase = true) || rawRule.contains("scale", ignoreCase = true) || rawRule.contains("色", ignoreCase = true) -> "colorScale"
@@ -688,13 +785,12 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
             val cr1 = cfBounds[2].coerceIn(cr0, cr0 + 500)
             val cc1 = cfBounds[3].coerceIn(cc0, cc0 + 60)
             val cfRangeAddr = "${MasuSheetConfig.formatCellAddress(cr0, cc0)}:${MasuSheetConfig.formatCellAddress(cr1, cc1)}"
-            if (nextCf.isEmpty()) {
+            val finalSnap = if (nextCf.isEmpty()) {
                 updateCustomCellStylesInRange(cr0, cc0, cr1, cc1) { _, _, st ->
                     st.copy(bgColor = CustomCellStyleOverride.CLEARED, fgColor = CustomCellStyleOverride.CLEARED)
                 }
-                engineGateway.executeCommand("home.clearRules", "{\"sheet\":false}")
-                val snap = engineGateway.executeCommand("home.fillColor", "{\"range\":\"$cfRangeAddr\",\"color\":\"none\"}")
-                applyViewportSnapshot(snap)
+                engineGateway.executeCommand("home.clearRules", "{\"range\":\"$cfRangeAddr\",\"sheet\":false}")
+                engineGateway.executeCommand("home.fillColor", "{\"range\":\"$cfRangeAddr\",\"color\":\"none\"}")
             } else {
                 val nums = mutableListOf<Float>()
                 for (r in cr0..cr1) {
@@ -747,25 +843,41 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
                     }
                     st.copy(bgColor = bg, fgColor = fg)
                 }
-                // Also forward rule to Rust engine so `sh.cond_formats` is populated and persisted in `.xlsx`!
-                val engineCfRule = when {
-                    cfType == "colorScale" -> "colorScale"
-                    rawRule.contains("less", ignoreCase = true) -> "lessThan"
-                    rawRule.contains("greater", ignoreCase = true) -> "greaterThan"
-                    rawRule.contains("below", ignoreCase = true) -> "belowAverage"
-                    rawRule.contains("above", ignoreCase = true) -> "aboveAverage"
-                    else -> "dataBar"
+                // Forward structured `{"range", "rule": {"type", ...}}` to Rust engine so `sh.cond_formats` persists in `.xlsx`!
+                val ruleObj = when {
+                    cfType == "colorScale" -> {
+                        val colorsArr = org.json.JSONArray().apply {
+                            when (scaleName) {
+                                "RYG" -> { put("#F8696B"); put("#FFEB84"); put("#63BE7B") }
+                                "BWR" -> { put("#5A8AC6"); put("#FFFFFF"); put("#F8696B") }
+                                else -> { put("#63BE7B"); put("#FFEB84"); put("#F8696B") }
+                            }
+                        }
+                        JSONObject().put("type", "colorScale").put("colors", colorsArr)
+                    }
+                    rawRule.contains("less", ignoreCase = true) ->
+                        JSONObject().put("type", "cellIs").put("operator", "less").put("value", avgV.toString())
+                    rawRule.contains("greater", ignoreCase = true) ->
+                        JSONObject().put("type", "cellIs").put("operator", "greater").put("value", avgV.toString())
+                    rawRule.contains("below", ignoreCase = true) ->
+                        JSONObject().put("type", "aboveAverage").put("below", true)
+                    rawRule.contains("above", ignoreCase = true) ->
+                        JSONObject().put("type", "aboveAverage").put("below", false)
+                    else ->
+                        JSONObject().put("type", "dataBar").put("color", barHex)
                 }
-                val cfSnap = engineGateway.executeCommand(
+                engineGateway.executeCommand(
                     "home.conditionalFormat",
                     JSONObject()
-                        .put("rule", engineCfRule)
-                        .put("color", barHex)
-                        .put("value", avgV.toString())
+                        .put("range", cfRangeAddr)
+                        .put("rule", ruleObj)
                         .toString()
                 )
-                applyViewportSnapshot(cfSnap)
             }
+            val cfSteps = (finalSnap.undoDepth - beforeUndoDepth).coerceAtLeast(0)
+            pushCustomOverlayUndoSnapshot(preCommandOverlaySnapshot.copy(engineStepsCount = cfSteps))
+            recordMacroStepIfNeeded("format.conditional", JSONObject().put("range", cfRangeAddr).put("type", nextCf.ifEmpty { "clear" }).toString())
+            applyViewportSnapshot(finalSnap)
             val isEn = cur.language == "en"
             _uiState.value = _uiState.value.copy(
                 activeConditionalFormat = nextCf,
@@ -1023,14 +1135,20 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
             return
         }
         "pivotAnalyze.pivotChart", "insert.pivotChart" -> {
+            val hasExplicitType = pObj.has("type") && pObj.optString("type", "").isNotBlank()
+            val shouldOpenPicker = pObj.optBoolean("openPicker", !hasExplicitType)
             val requestedType = pObj.optString("type", "column").ifBlank { "column" }
             val activePivot = getActivePivotTable()
-            val bounds = if (activePivot != null && activePivot.targetSheetIndex == cur.viewport.sheetIndex) {
+            val bounds = if (activePivot != null && activePivot.targetSheetIndex == cur.viewport.sheetIndex &&
+                activePivot.lastRenderedEndRow >= activePivot.lastRenderedStartRow
+            ) {
+                val filterOffset = if (activePivot.filterFields.isNotEmpty()) activePivot.filterFields.size + 1 else 0
+                val hdrRow = (activePivot.lastRenderedStartRow + filterOffset).coerceAtMost(activePivot.lastRenderedEndRow)
                 intArrayOf(
-                    activePivot.lastRenderedStartRow,
-                    activePivot.lastRenderedStartRow + 1,
+                    hdrRow,
+                    (hdrRow + 1).coerceAtMost(activePivot.lastRenderedEndRow),
                     activePivot.lastRenderedEndRow,
-                    activePivot.targetStartCol,
+                    activePivot.lastRenderedStartCol,
                     activePivot.lastRenderedEndCol
                 )
             } else {
@@ -1046,8 +1164,133 @@ internal fun MasuSheetViewModel.dispatchCommand(commandId: String, paramsJson: S
                 endCol = bounds[4],
                 customTitle = if (cur.language == "en") "PivotChart ($typeLabel - ${cur.viewport.sheetName})" else "ピボットグラフ ($typeLabel - ${cur.viewport.sheetName})"
             )
-            if (pObj.optBoolean("openPicker", true)) {
+            if (shouldOpenPicker) {
                 _uiState.value = _uiState.value.copy(isPivotChartPickerOpen = true)
+            }
+            return
+        }
+        "pivot.changeSource", "pivotAnalyze.changeSource" -> {
+            val src = pObj.optString("source", "").trim()
+            if (src.isNotEmpty()) {
+                onCreatePivotTable(sourceRangeText = src, placeOnNewSheet = false)
+            } else {
+                onOpenCreatePivotTableDialog(true)
+            }
+            return
+        }
+        "pivot.addField" -> {
+            val activePivot = getActivePivotTable()
+            val f = pObj.optString("field", "").trim().ifEmpty {
+                activePivot?.availableFields?.firstOrNull { !activePivot.isFieldActive(it) }
+                    ?: activePivot?.availableFields?.firstOrNull().orEmpty()
+            }
+            if (f.isNotEmpty()) {
+                val defaultArea = if (activePivot != null && f in activePivot.numericFields) "value" else "row"
+                onAssignPivotFieldToArea(f, pObj.optString("area", defaultArea))
+            } else {
+                onTogglePivotFieldsPane(open = true)
+            }
+            return
+        }
+        "pivot.removeField" -> {
+            val activePivot = getActivePivotTable()
+            val f = pObj.optString("field", "").trim().ifEmpty {
+                activePivot?.valueFields?.lastOrNull()?.fieldName
+                    ?: activePivot?.rowFields?.lastOrNull()
+                    ?: activePivot?.columnFields?.lastOrNull()
+                    ?: activePivot?.filterFields?.lastOrNull().orEmpty()
+            }
+            if (f.isNotEmpty()) {
+                onAssignPivotFieldToArea(f, "none")
+            }
+            return
+        }
+        "pivot.moveField" -> {
+            val activePivot = getActivePivotTable()
+            val area = pObj.optString("area", "row")
+            val f = pObj.optString("field", "").trim().ifEmpty {
+                activePivot?.rowFields?.firstOrNull() ?: activePivot?.valueFields?.firstOrNull()?.fieldName.orEmpty()
+            }
+            val delta = pObj.optInt("delta", 1)
+            if (f.isNotEmpty()) {
+                onMovePivotFieldInArea(area, f, delta)
+            }
+            return
+        }
+        "pivot.valueSettings", "pivot.calculatedField" -> {
+            val activePivot = getActivePivotTable()
+            val targetField = pObj.optString("field", "").trim().ifEmpty {
+                activePivot?.valueFields?.firstOrNull()?.fieldName.orEmpty()
+            }
+            if (targetField.isNotEmpty()) {
+                onCyclePivotValueFieldAgg(targetField, valueIndex = pObj.optInt("index", -1))
+            } else {
+                onTogglePivotFieldsPane(open = true)
+            }
+            return
+        }
+        "pivot.filter" -> {
+            val activePivot = getActivePivotTable()
+            val f = pObj.optString("field", "").trim().ifEmpty {
+                activePivot?.filterFields?.firstOrNull()
+                    ?: activePivot?.availableFields?.firstOrNull().orEmpty()
+            }
+            if (f.isNotEmpty()) {
+                if (activePivot != null && f !in activePivot.filterFields) {
+                    onAssignPivotFieldToArea(f, "filter")
+                }
+                if (pObj.has("value")) {
+                    onSetPivotFilterValue(f, pObj.optString("value", "ALL"))
+                }
+            }
+            return
+        }
+        "pivot.sort" -> {
+            val desc = pObj.optString("order", "asc").startsWith("desc", ignoreCase = true)
+            updateActivePivotAndMaterialize(
+                noticeJa = if (desc) "ピボット項目を降順に並べ替えました" else "ピボット項目を昇順に並べ替えました",
+                noticeEn = if (desc) "Sorted PivotTable items descending" else "Sorted PivotTable items ascending"
+            ) { p ->
+                val rf = p.rowFields.firstOrNull()
+                if (rf == null) p else {
+                    val sorted = if (desc) {
+                        p.sourceRecords.sortedByDescending { it[rf].orEmpty() }
+                    } else {
+                        p.sourceRecords.sortedBy { it[rf].orEmpty() }
+                    }
+                    p.copy(sourceRecords = sorted)
+                }
+            }
+            return
+        }
+        "pivot.group" -> {
+            val activePivot = getActivePivotTable()
+            if (activePivot != null && activePivot.rowFields.size < 2) {
+                onCreatePivotTable(placeOnNewSheet = false, presetKind = "hierarchy")
+            } else {
+                updateActivePivotAndMaterialize(
+                    noticeJa = "すべてのピボット行グループを展開しました",
+                    noticeEn = "Expanded all PivotTable row groups"
+                ) { p -> p.copy(collapsedRowGroups = emptySet()) }
+            }
+            return
+        }
+        "pivot.collapse" -> {
+            val grp = pObj.optString("group", "").trim()
+            if (grp.isNotEmpty()) {
+                onTogglePivotRowGroupCollapse(grp)
+            } else {
+                updateActivePivotAndMaterialize(
+                    noticeJa = "ピボット行グループの一括展開/折りたたみを切り替えました",
+                    noticeEn = "Toggled all PivotTable row groups"
+                ) { p ->
+                    val rf0 = p.rowFields.firstOrNull()
+                    if (rf0 == null) p else {
+                        val allOuter = p.sourceRecords.map { it[rf0].orEmpty().ifEmpty { "(空白)" } }.toSet()
+                        val nextCollapsed = if (p.collapsedRowGroups.isEmpty()) allOuter else emptySet()
+                        p.copy(collapsedRowGroups = nextCollapsed)
+                    }
+                }
             }
             return
         }

@@ -271,6 +271,16 @@ fun MasuSheetViewModel.onDuplicateSheetAt(sheetIndex: Int) {
     val clonedObjects = curAfterShift.sheetObjects
         .filter { it.sheetIndex == sheetIndex }
         .map { obj -> obj.copy(id = "obj_${nextObjectCounter++}", sheetIndex = insertPos) }
+    val clonedPivots = curAfterShift.pivotTables
+        .filter { it.targetSheetIndex == sheetIndex }
+        .mapIndexed { idx, p ->
+            p.copy(
+                id = "pivot_${insertPos}_dup_${idx}_${System.currentTimeMillis() % 100000}",
+                name = "${p.name}_copy",
+                targetSheetIndex = insertPos,
+                sourceSheetIndex = if (p.sourceSheetIndex == sheetIndex) insertPos else p.sourceSheetIndex
+            )
+        }
     val clonedComments = curAfterShift.cellComments
         .filterKeys { it.first == sheetIndex }
         .entries.associate { (k, v) -> (insertPos to k.second) to v }
@@ -286,6 +296,7 @@ fun MasuSheetViewModel.onDuplicateSheetAt(sheetIndex: Int) {
     val isEn = _uiState.value.language == "en"
     _uiState.value = _uiState.value.copy(
         sheetObjects = _uiState.value.sheetObjects + clonedObjects,
+        pivotTables = _uiState.value.pivotTables + clonedPivots,
         cellComments = _uiState.value.cellComments + clonedComments,
         cellHyperlinks = _uiState.value.cellHyperlinks + clonedHyperlinks,
         sheetTabColors = clonedTabColors,

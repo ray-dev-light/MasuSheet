@@ -649,6 +649,7 @@ fun AiSpreadsheetAssistantPanel(
                             onValueChange = { endpointDraft = it },
                             singleLine = true,
                             textStyle = TextStyle(color = Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+                            cursorBrush = SolidColor(Color(0xFF38BDF8)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(5.dp))
@@ -731,12 +732,12 @@ fun AiSpreadsheetAssistantPanel(
             ) {
                 val quickPrompts = if (isEn) {
                     listOf(
-                        "グラフ化して" to "📊 Create a chart from this sheet",
-                        "円グラフにして" to "🥧 Create a pie chart",
-                        "折れ線グラフを作って" to "📈 Create a line chart",
-                        "現在の表に合計・平均・構成比(%)を追加して整形" to "➕ Add Sum, Average & Share(%)",
-                        "在庫・発注管理シートを作成して" to "📦 Create Inventory Sheet",
-                        "月次予算・実績比較管理シートを作成" to "💰 Create Budget vs Actual Sheet"
+                        "Create a column chart from this sheet" to "📊 Create a chart from this sheet",
+                        "Create a pie chart" to "🥧 Create a pie chart",
+                        "Create a line chart" to "📈 Create a line chart",
+                        "Add Total, Average & Share (%) and format table" to "➕ Add Sum, Average & Share(%)",
+                        "Create Inventory & Reorder Sheet" to "📦 Create Inventory Sheet",
+                        "Create Monthly Budget vs Actual Sheet" to "💰 Create Budget vs Actual Sheet"
                     )
                 } else {
                     listOf(
@@ -751,7 +752,7 @@ fun AiSpreadsheetAssistantPanel(
                 quickPrompts.forEach { (rawPrompt, chipLabel) ->
                     MasuSheetPillButton(
                         label = chipLabel,
-                        onClick = { onSendPrompt(rawPrompt) }
+                        onClick = { if (!state.isLoading) onSendPrompt(rawPrompt) }
                     )
                 }
             }
@@ -1019,6 +1020,25 @@ fun AiSpreadsheetAssistantPanel(
                         }
                     }
                 }
+                if (state.isLoading) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF1E293B))
+                            .border(1.dp, Color(0xFF38BDF8), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = if (isEn) "⏳ AI Agent is generating response..." else "⏳ AIエージェントが応答を生成中です...",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
         }
 
@@ -1066,11 +1086,15 @@ fun AiSpreadsheetAssistantPanel(
                 )
             }
             MasuSheetPillButton(
-                label = if (isEn) "Send ➤" else "送信 ➤",
-                highlight = true,
+                label = if (state.isLoading) {
+                    if (isEn) "⏳..." else "⏳ 処理中"
+                } else {
+                    if (isEn) "Send ➤" else "送信 ➤"
+                },
+                highlight = !state.isLoading,
                 tag = "ms_btn_ai_send",
                 onClick = {
-                    if (promptInput.isNotBlank()) {
+                    if (!state.isLoading && promptInput.isNotBlank()) {
                         val toSend = promptInput
                         promptInput = ""
                         onSendPrompt(toSend)

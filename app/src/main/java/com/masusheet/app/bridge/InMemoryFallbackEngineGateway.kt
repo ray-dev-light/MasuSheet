@@ -64,9 +64,9 @@ class InMemoryFallbackEngineGateway : NativeEngineGateway {
         val redoStack: ArrayDeque<Map<Long, NativeCellModel>> = ArrayDeque()
     )
 
-    private val sessions = mutableMapOf<Long, FallbackSession>(0L to FallbackSession())
-    private var nextFallbackSessionId = 1L
-    private var currentSessionId = 0L
+    private val sessions = mutableMapOf<Long, FallbackSession>(1L to FallbackSession())
+    private var nextFallbackSessionId = 2L
+    private var currentSessionId = 1L
 
     override val activeSessionId: Long
         get() = currentSessionId
@@ -129,7 +129,7 @@ class InMemoryFallbackEngineGateway : NativeEngineGateway {
     }
 
     override fun switchSession(sessionId: Long) {
-        currentSessionId = sessionId.coerceAtLeast(0L)
+        currentSessionId = sessionId.coerceAtLeast(1L)
         if (currentSessionId !in sessions) {
             sessions[currentSessionId] = FallbackSession()
             populateSample("sales")
@@ -969,7 +969,7 @@ class InMemoryFallbackEngineGateway : NativeEngineGateway {
             "home.decreaseFontSize" -> {
                 mutateRangeCells { _, _, it -> it.copy(fontSize = (it.fontSize - 1f).coerceIn(8f, 72f)) }
             }
-            "home.clearFormats" -> {
+            "home.clearFormats", "edit.clearFormats" -> {
                 mutateRangeCells { _, _, it ->
                     it.copy(
                         bgColor = 0,
@@ -983,7 +983,12 @@ class InMemoryFallbackEngineGateway : NativeEngineGateway {
                     )
                 }
             }
-            "home.clearAll" -> {
+            "home.clearAll", "edit.clearAll" -> {
+                val bounds = resolveRangeBounds()
+                currentMerges.removeAll {
+                    it.startRow <= bounds[2] && it.endRow >= bounds[0] &&
+                        it.startCol <= bounds[3] && it.endCol >= bounds[1]
+                }
                 mutateRangeCells { _, _, it ->
                     it.copy(
                         displayText = "",
@@ -999,24 +1004,73 @@ class InMemoryFallbackEngineGateway : NativeEngineGateway {
                     )
                 }
             }
-            "home.mergeCenter" -> {
-                val r0 = minOf(selStartRow, selEndRow)
-                val c0 = minOf(selStartCol, selEndCol)
-                val r1 = maxOf(selStartRow, selEndRow).coerceAtLeast(r0)
-                val c1 = maxOf(selStartCol, selEndCol).coerceAtLeast(c0 + 1)
-                val existingMerge = currentMerges.firstOrNull { it.contains(activeRow, activeCol) }
-                if (existingMerge != null) {
+            "edit.clearContents" -> {
+                mutateRangeCells { _, _, it -> it.copy(displayText = "", editText = "") }
+            }
+            "home.mergeCenter", "home.mergeCells" -> {
+                val bounds = resolveRangeBounds()
+                val r0 = bounds[0]
+                val c0 = bounds[1]
+                val r1 = bounds[2].coerceAtLeast(r0)
+                val c1 = bounds[3].coerceAtLeast(if (r1 > r0) c0 else c0 + 1)
+                val existingMerge = currentMerges.firstOrNull { it.contains(r0, c0) }
+                if (existingMerge != null && commandId == "home.mergeCenter") {
                     currentMerges.remove(existingMerge)
                 } else {
+                    currentMerges.removeAll {
+                        it.startRow <= r1 && it.endRow >= r0 && it.startCol <= c1 && it.endCol >= c0
+                    }
                     currentMerges.add(NativeMergeRange(r0, c0, r1, c1))
                 }
                 revision++
                 isDirty = true
             }
             "home.unmergeCells" -> {
-                currentMerges.removeAll { it.contains(activeRow, activeCol) }
+                val bounds = resolveRangeBounds()
+                currentMerges.removeAll {
+                    it.contains(activeRow, activeCol) ||
+                        (it.startRow <= bounds[2] && it.endRow >= bounds[0] && it.startCol <= bounds[3] && it.endCol >= bounds[1])
+                }
                 revision++
                 isDirty = true
+            }
+            "data.sortAscending", "data.sortDescending" -> {
+                pushUndo()
+                val desc = commandId == "data.sortDescending"
+                val bounds = resolveRangeBounds()
+                val r0 = bounds[0]
+                val c0 = bounds[1]
+                val r1 = bounds[2]
+                val c1 = bounds[3]
+                val keyCol = p.optInt("col", activeCol).coerceIn(c0, c1)
+                val dataStart = if (r1 > r0) r0 + 1 else r0
+                if (r1 > dataStart) {
+                    val rowsData = (dataStart..r1).map { r ->
+                        (c0..c1).map { c -> currentCells[NativeViewportSnapshot.packCellKey(r, c)] }
+                    }
+                    val sorted = rowsData.sortedWith { a, b ->
+                        val va = a.getOrNull(keyCol - c0)?.displayText?.replace(",", "")?.replace("¥", "")?.trim().orEmpty()
+                        val vb = b.getOrNull(keyCol - c0)?.displayText?.replace(",", "")?.replace("¥", "")?.trim().orEmpty()
+                        val na = va.toDoubleOrNull()
+                        val nb = vb.toDoubleOrNull()
+                        val cmp = if (na != null && nb != null) na.compareTo(nb) else va.compareTo(vb)
+                        if (desc) -cmp else cmp
+                    }
+                    for ((offset, rowCells) in sorted.withIndex()) {
+                        val targetR = dataStart + offset
+                        for ((cOff, cellObj) in rowCells.withIndex()) {
+                            val targetC = c0 + cOff
+                            val ck = NativeViewportSnapshot.packCellKey(targetR, targetC)
+                            if (cellObj != null) {
+                                currentCells[ck] = cellObj.copy(row = targetR, col = targetC)
+                            } else {
+                                currentCells.remove(ck)
+                            }
+                        }
+                    }
+                    revision++
+                    isDirty = true
+                }
             }
             "sheet.hide" -> {
                 val visibleCount = sheets.count { !it.hidden }
