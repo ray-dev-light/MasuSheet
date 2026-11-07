@@ -273,21 +273,37 @@ class InMemoryFallbackEngineGateway : NativeEngineGateway {
     }
 
     /**
-     * [EN] Exports full RFC 4180 CSV/TSV when saving text delimited files in fallback mode,
+     * [EN] Exports full RFC 4180 CSV/TSV or UTF-8 HTML table when saving text files in fallback mode,
      *      and returns `null` for binary formats (`.xlsx`/`.xlsm`/`.xlsb`/`.ods`) so an unloaded `.so`
      *      never silently overwrites a real binary workbook with dummy bytes!
-     * [JA] フォールバック時は `.csv`/`.tsv` のみ全セルRFC 4180出力を行い、バイナリ形式（`.xlsx` 等）は `null` を返して
+     * [JA] フォールバック時は `.csv`/`.tsv`/`.html` のみテキスト出力を行い、バイナリ形式（`.xlsx` 等）は `null` を返して
      *      ダミーデータによる上書き破壊を防止します。
      */
     override fun saveWorkbookBytes(fileName: String): ByteArray? {
         val lower = fileName.trim().lowercase()
+        val maxR = currentCells.values.maxOfOrNull { it.row } ?: -1
+        val maxC = currentCells.values.maxOfOrNull { it.col } ?: -1
+        if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+            val sb = StringBuilder("<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body><table>\n")
+            if (maxR >= 0 && maxC >= 0) {
+                for (r in 0..maxR) {
+                    sb.append("<tr>")
+                    for (c in 0..maxC) {
+                        val raw = currentCells[NativeViewportSnapshot.packCellKey(r, c)]?.displayText.orEmpty()
+                        val esc = raw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+                        sb.append("<td>").append(esc).append("</td>")
+                    }
+                    sb.append("</tr>\n")
+                }
+            }
+            sb.append("</table></body></html>\n")
+            return sb.toString().toByteArray(Charsets.UTF_8)
+        }
         val delim = when {
             lower.endsWith(".csv") -> ','
             lower.endsWith(".tsv") -> '\t'
             else -> return null
         }
-        val maxR = currentCells.values.maxOfOrNull { it.row } ?: -1
-        val maxC = currentCells.values.maxOfOrNull { it.col } ?: -1
         if (maxR < 0 || maxC < 0) return ByteArray(0)
         val sb = StringBuilder()
         for (r in 0..maxR) {

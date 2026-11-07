@@ -264,7 +264,7 @@ fun MasuSheetViewModel.onCancelPendingSave() {
 internal fun MasuSheetViewModel.scanExistingFilesInFolder(folderPath: String): List<ExistingFolderFileItem> {
     val items = mutableListOf<ExistingFolderFileItem>()
     val seenNames = mutableSetOf<String>()
-    val supportedExts = setOf("xlsx", "csv", "tsv", "ods", "pdf", "xlsm", "xlsb")
+    val supportedExts = setOf("xlsx", "csv", "tsv", "ods", "pdf", "html", "htm", "xlsm", "xlsb", "xls")
     val cleanPath = folderPath.trim().trimEnd('/')
 
     fun addFileCandidate(f: File) {
@@ -364,17 +364,21 @@ internal fun MasuSheetViewModel.advanceObjectCounterPast(objects: List<NativeShe
 }
 
 /**
- * [EN] Exports the active workbook as `.xlsx`/`.xlsm` (with embedded OOXML charts/images + lossless overlay), `.pdf`, `.csv`, `.tsv`, or `.ods` bytes.
- * [JA] 指定拡張子（グラフ・画像・ピボット完全保持の `.xlsx`/`.xlsm`、または `.pdf`・`.csv`・`.tsv`・`.ods`）の保存用バイト列を生成します。
+ * [EN] Exports the active workbook as `.xlsx`/`.xlsm` (with embedded OOXML charts/images + lossless overlay), `.pdf`, `.csv`, `.tsv`, or `.html` bytes.
+ * [JA] 指定拡張子（グラフ・画像・ピボット完全保持の `.xlsx`/`.xlsm`、または `.pdf`・`.csv`・`.tsv`・`.html`）の保存用バイト列を生成します。
  */
 internal fun MasuSheetViewModel.buildExportBytesForFormat(fileNameWithExt: String, extension: String): ByteArray? {
-    val ext = extension.lowercase()
+    val ext = MasuSheetConfig.normalizeExportExtension(extension)
+    val targetFileName = MasuSheetConfig.buildFileNameWithExtension(
+        MasuSheetConfig.extractBaseNameWithoutExtension(fileNameWithExt),
+        ext
+    )
     ensureDefaultSalesDashboardChartsMaterialized()
     engineGateway.syncWorkbookObjects(_uiState.value.sheetObjects)
     return when (ext) {
         "pdf" -> engineGateway.exportPdfBytes()
         "csv", "tsv" -> {
-            val engineBytes = engineGateway.saveWorkbookBytes(fileNameWithExt)
+            val engineBytes = engineGateway.saveWorkbookBytes(targetFileName)
             if (engineBytes != null && engineBytes.isNotEmpty()) {
                 engineBytes
             } else {
@@ -397,10 +401,10 @@ internal fun MasuSheetViewModel.buildExportBytesForFormat(fileNameWithExt: Strin
             }
         }
         "xlsx", "xlsm" -> {
-            val rawBytes = engineGateway.saveWorkbookBytes(fileNameWithExt) ?: return null
+            val rawBytes = engineGateway.saveWorkbookBytes(targetFileName) ?: return null
             WorkbookXlsxObjectPersistence.embedIntoXlsxBytes(rawBytes, buildCurrentWorkbookPersistenceSession())
         }
-        else -> engineGateway.saveWorkbookBytes(fileNameWithExt)
+        else -> engineGateway.saveWorkbookBytes(targetFileName)
     }
 }
 
@@ -411,7 +415,7 @@ internal fun MasuSheetViewModel.buildExportBytesForFormat(fileNameWithExt: Strin
 fun MasuSheetViewModel.onOpenSaveDialog(defaultExtension: String = "xlsx", prepareBytesImmediately: Boolean = false) {
     val current = _uiState.value
     val base = MasuSheetConfig.extractBaseNameWithoutExtension(current.workbookTitle)
-    val ext = defaultExtension.trim().trimStart('.').lowercase().ifEmpty { "xlsx" }
+    val ext = MasuSheetConfig.normalizeExportExtension(defaultExtension)
     val safeName = MasuSheetConfig.buildFileNameWithExtension(base, ext)
     val bytes = if (prepareBytesImmediately) buildExportBytesForFormat(safeName, ext) else null
     val folderPath = current.saveDialogFolderPath
@@ -439,12 +443,12 @@ fun MasuSheetViewModel.onUpdateSaveDialogBaseName(newBaseName: String) {
 }
 
 /**
- * [EN] Changes the target file format extension (`xlsx`, `pdf`, `csv`, `tsv`, `ods`) inside the Save Dialog.
- * [JA] 保存ダイアログの出力ファイル形式（`xlsx`・`pdf`・`csv`・`tsv`・`ods`）を切り替えます。
+ * [EN] Changes the target file format extension (`xlsx`, `pdf`, `csv`, `tsv`, `html`) inside the Save Dialog.
+ * [JA] 保存ダイアログの出力ファイル形式（`xlsx`・`pdf`・`csv`・`tsv`・`html`）を切り替えます。
  */
 fun MasuSheetViewModel.onSelectSaveDialogExtension(newExtension: String) {
     val current = _uiState.value
-    val ext = newExtension.trim().trimStart('.').lowercase().ifEmpty { "xlsx" }
+    val ext = MasuSheetConfig.normalizeExportExtension(newExtension)
     val safeName = MasuSheetConfig.buildFileNameWithExtension(current.saveDialogBaseName, ext)
     _uiState.value = current.copy(
         saveDialogExtension = ext,
@@ -470,7 +474,8 @@ fun MasuSheetViewModel.onSelectSaveDialogFolder(folderPath: String) {
  */
 fun MasuSheetViewModel.onSelectExistingFileForSaveName(item: ExistingFolderFileItem) {
     val current = _uiState.value
-    val ext = item.extension.ifBlank { current.saveDialogExtension }
+    val fallbackExt = MasuSheetConfig.normalizeExportExtension(current.saveDialogExtension)
+    val ext = MasuSheetConfig.normalizeExportExtension(item.extension, fallbackExt)
     val safeName = MasuSheetConfig.buildFileNameWithExtension(item.baseName, ext)
     _uiState.value = current.copy(
         saveDialogBaseName = item.baseName,
@@ -542,7 +547,7 @@ fun MasuSheetViewModel.onConfirmSaveDirectlyToFolder(): Boolean {
 fun MasuSheetViewModel.onOpenSaveDialogAsync(defaultExtension: String = "xlsx") {
     val current = _uiState.value
     val base = MasuSheetConfig.extractBaseNameWithoutExtension(current.workbookTitle)
-    val ext = defaultExtension.trim().trimStart('.').lowercase().ifEmpty { "xlsx" }
+    val ext = MasuSheetConfig.normalizeExportExtension(defaultExtension)
     val safeName = MasuSheetConfig.buildFileNameWithExtension(base, ext)
     val folderPath = current.saveDialogFolderPath
     _uiState.value = current.copy(
@@ -585,13 +590,13 @@ fun MasuSheetViewModel.onSelectSaveDialogFolderAsync(folderPath: String, onScanC
  */
 fun MasuSheetViewModel.onConfirmSaveDirectlyToFolderAsync() {
     val current = _uiState.value
-    val ext = current.saveDialogExtension.lowercase()
+    val ext = MasuSheetConfig.normalizeExportExtension(current.saveDialogExtension)
     val finalName = MasuSheetConfig.buildFileNameWithExtension(current.saveDialogBaseName, ext)
     ensureDefaultSalesDashboardChartsMaterialized()
     engineGateway.syncWorkbookObjects(current.sheetObjects)
     val rawBytes: ByteArray? = when (ext) {
         "pdf" -> engineGateway.exportPdfBytes()
-        "csv", "tsv" -> buildExportBytesForFormat(finalName, ext)
+        "csv", "tsv", "html" -> buildExportBytesForFormat(finalName, ext)
         else -> engineGateway.saveWorkbookBytes(finalName)
     }
     if (rawBytes == null) {

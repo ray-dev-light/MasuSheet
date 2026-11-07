@@ -50,7 +50,7 @@ import kotlin.math.min
 /**
  * ============================================================================
  * [EN] Workbook Save / Export / Folder Browser Dialog
- * Implements [MasuSheetSaveDialog] supporting `.xlsx`, `.csv`, `.tsv`, `.ods`, `.html`, and `.pdf` export across Android Downloads/Documents, SAF folders, and Linux workspace directories.
+ * Implements [MasuSheetSaveDialog] supporting `.xlsx`, `.csv`, `.tsv`, `.html`, and `.pdf` export (plus opening `.xlsx`, `.xls`, `.xlsb`, `.ods`, `.csv`, and `.tsv` files) across Android Downloads/Documents, SAF folders, and Linux workspace directories.
  *
  * ---
  * [JA / 日本語解説]
@@ -82,7 +82,7 @@ fun MasuSheetSaveDialog(
         state.saveDialogBaseName,
         state.saveDialogExtension
     )
-    val saveExtensions = listOf("xlsx", "csv", "tsv", "ods", "pdf")
+    val saveExtensions = listOf("xlsx", "csv", "tsv", "html", "pdf")
     val folderPresets = remember(context, state.saveDialogFolderPath) {
         val base = MasuSheetConfig.resolveEnvironmentSaveFolders(context).toMutableList()
         if (state.saveDialogFolderPath.isNotBlank() && base.none { it.second == state.saveDialogFolderPath }) {

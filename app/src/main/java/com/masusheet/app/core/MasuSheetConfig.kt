@@ -91,8 +91,11 @@ object MasuSheetConfig {
         }
     }
 
+    val SUPPORTED_EXPORT_EXTENSIONS: Set<String> = setOf("xlsx", "xlsm", "csv", "tsv", "html", "pdf")
+
     fun resolveExportMimeType(fileName: String): String {
-        val ext = fileName.trim().substringAfterLast('.', "").lowercase()
+        val trimmed = fileName.trim().trimStart('.')
+        val ext = (if ('.' in trimmed) trimmed.substringAfterLast('.') else trimmed).lowercase()
         return when (ext) {
             "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             "xlsm" -> "application/vnd.ms-excel.sheet.macroEnabled.12"
@@ -136,7 +139,13 @@ object MasuSheetConfig {
         val cleaned = rawName?.trim()?.substringAfterLast('/').orEmpty()
         if (!cleaned.contains('.')) return defaultExt
         val ext = cleaned.substringAfterLast('.').lowercase().trim()
-        return if (ext in setOf("xlsx", "csv", "tsv", "ods", "pdf", "xlsm", "xlsb")) ext else defaultExt
+        return if (ext in setOf("xlsx", "csv", "tsv", "ods", "pdf", "html", "htm", "xlsm", "xlsb", "xls")) ext else defaultExt
+    }
+
+    fun normalizeExportExtension(rawExt: String?, fallback: String = "xlsx"): String {
+        val ext = rawExt?.trim()?.trimStart('.')?.lowercase().orEmpty()
+        val mapped = if (ext == "htm") "html" else ext
+        return if (mapped in SUPPORTED_EXPORT_EXTENSIONS) mapped else fallback
     }
 
     fun buildFileNameWithExtension(baseName: String?, extension: String): String {

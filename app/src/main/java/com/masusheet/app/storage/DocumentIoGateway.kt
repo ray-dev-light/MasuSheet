@@ -465,7 +465,7 @@ class ContentResolverDocumentGateway(
      * MediaStore、およびローカルディレクトリ検索を統合して返却）。
      */
     override fun listFolderFiles(folderPath: String): List<ExistingFolderFileItem> {
-        val supportedExts = setOf("xlsx", "csv", "tsv", "ods", "pdf", "xlsm", "xlsb")
+        val supportedExts = setOf("xlsx", "csv", "tsv", "ods", "pdf", "html", "htm", "xlsm", "xlsb", "xls")
         val results = mutableListOf<ExistingFolderFileItem>()
         val seenNames = mutableSetOf<String>()
         val cleanFolder = folderPath.trimEnd('/')

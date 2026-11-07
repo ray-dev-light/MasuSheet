@@ -36,6 +36,7 @@ import com.masusheet.app.storage.PreferenceStore
 import com.masusheet.app.storage.SecretStore
 import com.masusheet.app.storage.WindowHandoffManager
 import com.masusheet.app.viewmodel.MasuSheetViewModel
+import com.masusheet.app.viewmodel.buildExportBytesForFormat
 import com.masusheet.app.viewmodel.onAddSheet
 import com.masusheet.app.viewmodel.onAutoFillRange
 import com.masusheet.app.viewmodel.onCompletePendingSave
@@ -43,6 +44,8 @@ import com.masusheet.app.viewmodel.onCreateNewBlankWorkbookSession
 import com.masusheet.app.viewmodel.onCreatePivotTable
 import com.masusheet.app.viewmodel.onDragFreezePaneBoundary
 import com.masusheet.app.viewmodel.onExecuteConfirmedAiPlan
+import com.masusheet.app.viewmodel.onOpenSaveDialog
+import com.masusheet.app.viewmodel.onSelectSaveDialogExtension
 import com.masusheet.app.viewmodel.onHideSelectedRows
 import com.masusheet.app.viewmodel.onHideSheetAt
 import com.masusheet.app.viewmodel.onInsertChart
@@ -1288,7 +1291,26 @@ class MasuSheetSecurityAndRegressionTest {
         val assetNotice = File(assetsDir, "NOTICE.txt")
         assertEquals("Root NOTICE and bundled NOTICE.txt must match byte-for-byte", rootNotice.readText(), assetNotice.readText())
         assertFalse(assetNotice.readText().contains("rayon"))
-        assertFalse(assetNotice.readText().contains("Googlebook"))
+        assertFalse(assetNotice.readText().contains("Chromebook"))
+        assertFalse(assetNotice.readText().contains("ChromeOS"))
+        assertTrue(assetNotice.readText().contains("Googlebook"))
+
+        // Verify bare extension MIME resolution and import-only extension normalization for Save Dialog (.html supported, .ods normalized to .xlsx)
+        assertEquals("text/html", MasuSheetConfig.resolveExportMimeType("html"))
+        assertEquals("text/html", MasuSheetConfig.resolveExportMimeType(".html"))
+        assertEquals("application/pdf", MasuSheetConfig.resolveExportMimeType("pdf"))
+        assertEquals("xlsx", MasuSheetConfig.normalizeExportExtension("ods"))
+        assertEquals("html", MasuSheetConfig.normalizeExportExtension("htm"))
+        val saveVm = createTestViewModel(blank = true)
+        saveVm.onCommitCellEdit(0, 0, "Hello <HTML>")
+        saveVm.onOpenSaveDialog("ods")
+        assertEquals("xlsx", saveVm.uiState.value.saveDialogExtension)
+        saveVm.onSelectSaveDialogExtension("html")
+        assertEquals("html", saveVm.uiState.value.saveDialogExtension)
+        val htmlExport = saveVm.buildExportBytesForFormat("Book1.html", "html")
+        assertNotNull("HTML export must produce non-null bytes", htmlExport)
+        val htmlStr = String(htmlExport!!, Charsets.UTF_8)
+        assertTrue("HTML export must contain <table> and escaped cell text", htmlStr.contains("<table") && htmlStr.contains("Hello &lt;HTML&gt;"))
 
         val thirdParty = File(assetsDir, "THIRD_PARTY_LICENSES.txt").readText()
         assertTrue("THIRD_PARTY_LICENSES.txt must include Unicode, Inc. notice", thirdParty.contains("Unicode, Inc."))
