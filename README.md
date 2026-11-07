@@ -55,7 +55,7 @@
 
 ## Architecture & Module Layout
 
-MasuSheet separates UI, state orchestration, rendering, storage, and native calculation into focused, human-readable modules with bilingual (`[EN]` / `[JA]`) KDoc documentation:
+MasuSheet separates UI, state orchestration, rendering, storage, and native calculation into focused, human-readable modules, with bilingual (`[EN]` / `[JA]`) documentation across all Android Kotlin modules and the `crates/jni` bridge:
 
 ```text
 MasuSheet/
